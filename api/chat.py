@@ -20,6 +20,7 @@ from api.chain import (
     get_initial_chat_message,
     search_and_recommend_restaurants,
     get_latest_recommended_foods,
+    generate_oheng_explanation,
 )
 
 from api.saju import _get_oheng_analysis_data
@@ -426,6 +427,35 @@ async def handle_websocket_message(
     if not chatroom:
         return
 
+    # 오행 설명 요청 체크
+    if message_content == "[REQUEST_OHENG_INFO]":
+        # 사용자별 맞춤 메시지 생성
+        explanation = await generate_oheng_explanation(uid, db)
+        
+        info_message = ChatMessage(
+            room_id=room_id,
+            sender_id="assistant",
+            role="assistant",
+            content=explanation,
+            message_type="oheng_info",
+            timestamp=datetime.datetime.utcnow(),
+        )
+        db.add(info_message)
+        db.commit()
+        db.refresh(info_message)
+        
+        # 브로드캐스트
+        bot_msg_json = chat_message_to_json(info_message, "밥풀이", uid)
+        await manager.broadcast(
+            room_id,
+            json.dumps({"type": "new_message", "message": bot_msg_json}),
+        )
+        
+        chatroom.last_message_id = info_message.id
+        db.add(chatroom)
+        db.commit()
+        return
+        
     # LOCATION_SELECTED 여부 먼저 확인
     is_location_message = message_content.startswith("[LOCATION_SELECTED:")
 
@@ -735,7 +765,7 @@ async def create_chatroom(
 
     greeting_message_content = (
         "안녕! 나는 오늘의 운세에 맞춰 행운의 맛집을 추천해주는 '밥풀이'야🍀 "
-        "지금 너한테 딱 맞는 메뉴 추천해줄까?"
+        "지금 너한테 딱 맞는 메뉴 추천해줄까?  먹고 싶은 메뉴 고르면 식당도 알려줄게!"
     )
     greeting_message = ChatMessage(
         room_id=chatroom.id,
@@ -1020,6 +1050,35 @@ async def send_message(
             status_code=404, detail="채팅방을 찾을 수 없음"
         )
 
+    if request.message == "[REQUEST_OHENG_INFO]":
+        # 사용자별 맞춤 메시지 생성
+        explanation = await generate_oheng_explanation(uid, db)
+        
+        info_message = ChatMessage(
+            room_id=request.room_id,
+            sender_id="assistant",
+            role="assistant",
+            content=explanation,
+            message_type="oheng_info",
+            timestamp=datetime.datetime.utcnow(),
+        )
+        db.add(info_message)
+        db.commit()
+        db.refresh(info_message)
+        
+        chatroom.last_message_id = info_message.id
+        db.add(chatroom)
+        db.commit()
+        
+        return {
+            "reply": {
+                "role": "assistant",
+                "content": explanation,
+                "message_type": "oheng_info",
+            },
+            "user_message_id": None,
+        }
+        
     chat_message = ChatMessage(
         room_id=chatroom.id,
         sender_id=uid,
