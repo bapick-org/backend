@@ -764,14 +764,14 @@ async def create_chatroom(
     initial_message_content = None
 
     greeting_message_content = (
-        "안녕! 나는 오늘의 운세에 맞춰 행운의 맛집을 추천해주는 '밥풀이'야🍀 "
-        "지금 너한테 딱 맞는 메뉴 추천해줄까?  먹고 싶은 메뉴 고르면 식당도 알려줄게!"
+        "안녕! 나는 오늘의 운세에 맞춰 행운의 맛집을 추천해주는 '밥풀이'야🍀 지금 너한테 딱 맞는 메뉴 추천해줄까? 먹고 싶은 메뉴 고르면 식당도 알려줄게!"
     )
     greeting_message = ChatMessage(
         room_id=chatroom.id,
         role="assistant",
         content=greeting_message_content,
         sender_id="assistant",
+        message_type="greeting",
     )
     db.add(greeting_message)
     db.commit()
