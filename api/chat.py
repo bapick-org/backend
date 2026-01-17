@@ -427,31 +427,31 @@ async def handle_websocket_message(
     if not chatroom:
         return
 
-    # 오행 설명 요청 체크
-    if message_content == "[REQUEST_OHENG_INFO]":
+    # 추천 기준 설명 요청 처리
+    if message_content == "[REQUEST_RECOMMENDATION_GUIDE]":
         # 사용자별 맞춤 메시지 생성
-        explanation = await generate_oheng_explanation(uid, db)
+        oheng_explanation = await generate_oheng_explanation(uid, db)
         
-        info_message = ChatMessage(
+        guide_message = ChatMessage(
             room_id=room_id,
             sender_id="assistant",
             role="assistant",
-            content=explanation,
-            message_type="oheng_info",
+            content=oheng_explanation,
+            message_type="recommendation_guide",
             timestamp=datetime.datetime.utcnow(),
         )
-        db.add(info_message)
+        db.add(guide_message)
         db.commit()
-        db.refresh(info_message)
+        db.refresh(guide_message)
         
         # 브로드캐스트
-        bot_msg_json = chat_message_to_json(info_message, "밥풀이", uid)
+        bot_msg_json = chat_message_to_json(guide_message, "밥풀이", uid)
         await manager.broadcast(
             room_id,
             json.dumps({"type": "new_message", "message": bot_msg_json}),
         )
         
-        chatroom.last_message_id = info_message.id
+        chatroom.last_message_id = guide_message.id
         db.add(chatroom)
         db.commit()
         return
@@ -555,9 +555,9 @@ async def handle_websocket_message(
             )
 
             oheng_info_text = f"""
-            부족한 오행: {", ".join(lacking_oheng)}
-            강한 오행: {", ".join(strong_ohengs)}
-            조절 오행: {", ".join(control_ohengs)}
+                부족한 오행: {", ".join(lacking_oheng)}
+                강한 오행: {", ".join(strong_ohengs)}
+                조절 오행: {", ".join(control_ohengs)}
             """
 
             llm_output = generate_llm_response(
@@ -1050,31 +1050,32 @@ async def send_message(
             status_code=404, detail="채팅방을 찾을 수 없음"
         )
 
-    if request.message == "[REQUEST_OHENG_INFO]":
+    # 추천 기준 설명 요청 처리
+    if request.message == "[REQUEST_RECOMMENDATION_GUIDE]":
         # 사용자별 맞춤 메시지 생성
-        explanation = await generate_oheng_explanation(uid, db)
+        oheng_explanation = await generate_oheng_explanation(uid, db)
         
-        info_message = ChatMessage(
+        guide_message = ChatMessage(
             room_id=request.room_id,
             sender_id="assistant",
             role="assistant",
-            content=explanation,
-            message_type="oheng_info",
+            content=oheng_explanation,
+            message_type="recommendation_guide",
             timestamp=datetime.datetime.utcnow(),
         )
-        db.add(info_message)
+        db.add(guide_message)
         db.commit()
-        db.refresh(info_message)
+        db.refresh(guide_message)
         
-        chatroom.last_message_id = info_message.id
+        chatroom.last_message_id = guide_message.id
         db.add(chatroom)
         db.commit()
         
         return {
             "reply": {
                 "role": "assistant",
-                "content": explanation,
-                "message_type": "oheng_info",
+                "content": oheng_explanation,
+                "message_type": "recommendation_guide",
             },
             "user_message_id": None,
         }
