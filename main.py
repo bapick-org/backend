@@ -91,6 +91,8 @@ origins = [
     "https://bab-front-gamma.vercel.app",
     "https://bapick-app.vercel.app",
     "https://bapick.duckdns.org",
+    "https://bapick.kr",
+    "https://www.bapick.kr"
 ]
 
 app.add_middleware(
