@@ -1,6 +1,5 @@
 import re
 import random 
-import json
 from typing import List, Dict, Any
 from sqlalchemy.orm import Session
 import google.genai as genai
@@ -43,6 +42,55 @@ OHAENG_FOOD_LISTS = {
         "초밥", "물회", "해물찜", "오징어덮밥", "새우장", "짬뽕", "우동", "라멘", "칼국수", "만두", "어묵탕", "냉면", "소바", "잔치국수", "추어탕",
     ],
 }
+
+# 사용자의 오행 상태를 기반으로 메뉴 추천 설명 메시지 생성
+async def generate_oheng_explanation(uid: str, db: Session) -> str:
+    # 오행 정보 가져오기
+    lacking_oheng, strong_oheng_db, oheng_type, oheng_scores = (
+        await _get_oheng_analysis_data(uid, db)
+    )
+    _, _, _, control_ohengs, strong_ohengs = define_oheng_messages(
+        lacking_oheng, strong_oheng_db, oheng_type, oheng_scores
+    )
+    
+    # 오행별 음식 예시
+    oheng_food_examples = {
+        "목(木)": "샐러드, 쌈밥, 육회비빔밥 같은 신선하고 가벼운 음식",
+        "화(火)": "떡볶이, 김치찌개, 짬뽕 같은 매콤하고 자극적인 음식",
+        "토(土)": "김밥, 카레라이스, 된장찌개 같은 탄수화물 중심의 든든한 음식",
+        "금(金)": "후라이드치킨, 두부조림, 계란찜 같은 담백하고 깔끔하거나 바삭한 음식",
+        "수(水)": "초밥, 물회, 해물탕 같은 시원하고 촉촉한 음식"
+    }
+    
+    message = "오행을 기준으로 음식을 추천하고 있어!\n\n"
+    
+    # 오행 기본 설명
+    message += "오행이란 세상을 다섯 가지 에너지로 나눠서 이해하는 개념이야. "
+    message += "우리의 몸도 화(火), 수(水), 목(木), 금(金), 토(土) 다섯 가지 기운으로 이루어져 있어서, 이 기운들의 밸런스를 맞춰주면 좋아.\n\n"
+        
+    # 부족한 오행
+    if lacking_oheng:        
+        # 각 부족한 오행별 음식 예시
+        for oheng in lacking_oheng:
+            food_example = oheng_food_examples.get(oheng, "관련 음식")
+            message += f"오늘은 부족한 {', '.join(lacking_oheng)} 기운을 {food_example}을 통해 채우면 좋아."
+        message += "\n"
+    
+    # 강한 오행 + 조절 오행
+    if strong_ohengs and control_ohengs:
+        strong_str = ', '.join(strong_ohengs)
+        control_str = ', '.join(control_ohengs)
+
+        # 상극 관계 설명
+        for control in control_ohengs:
+            food_example = oheng_food_examples.get(control, "관련 음식")
+            message += f"넘치는 {strong_str} 기운은 {control_str} 기운의 음식({food_example})으로 눌러줄 수 있어!\n"
+        message += "\n"
+    
+    message += "하지만 오행은 재미있는 가이드일 뿐이야. "
+    message += "언제든 다른 메뉴도 찾아줄 수 있어!🍀"
+    
+    return message
 
 # 오행별 음식 목록에서 랜덤으로 count개만큼만 문자열로 반환
 def get_food_recommendations_for_ohaeng(oheng: str, count: int = 3) -> str:
@@ -160,7 +208,11 @@ def build_conversation_history(db: Session, chatroom_id: int) -> str:
     recent_messages.reverse()  # 시간순 정렬
 
     conversation_history = ""
+    
     for msg in recent_messages:
+        if msg.message_type in ["hidden_initial", "oheng_info", "location_select"]:
+            continue
+        
         role = "사용자" if msg.role == "user" else "봇"
         conversation_history += f"{msg.content}\n"
     return conversation_history

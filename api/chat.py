@@ -20,6 +20,7 @@ from api.chain import (
     get_initial_chat_message,
     search_and_recommend_restaurants,
     get_latest_recommended_foods,
+    generate_oheng_explanation,
 )
 
 from api.saju import _get_oheng_analysis_data
@@ -426,6 +427,35 @@ async def handle_websocket_message(
     if not chatroom:
         return
 
+    # 추천 기준 설명 요청 처리
+    if message_content == "[REQUEST_RECOMMENDATION_GUIDE]":
+        # 사용자별 맞춤 메시지 생성
+        oheng_explanation = await generate_oheng_explanation(uid, db)
+        
+        guide_message = ChatMessage(
+            room_id=room_id,
+            sender_id="assistant",
+            role="assistant",
+            content=oheng_explanation,
+            message_type="recommendation_guide",
+            timestamp=datetime.datetime.utcnow(),
+        )
+        db.add(guide_message)
+        db.commit()
+        db.refresh(guide_message)
+        
+        # 브로드캐스트
+        bot_msg_json = chat_message_to_json(guide_message, "밥풀이", uid)
+        await manager.broadcast(
+            room_id,
+            json.dumps({"type": "new_message", "message": bot_msg_json}),
+        )
+        
+        chatroom.last_message_id = guide_message.id
+        db.add(chatroom)
+        db.commit()
+        return
+        
     # LOCATION_SELECTED 여부 먼저 확인
     is_location_message = message_content.startswith("[LOCATION_SELECTED:")
 
@@ -525,9 +555,9 @@ async def handle_websocket_message(
             )
 
             oheng_info_text = f"""
-            부족한 오행: {", ".join(lacking_oheng)}
-            강한 오행: {", ".join(strong_ohengs)}
-            조절 오행: {", ".join(control_ohengs)}
+                부족한 오행: {", ".join(lacking_oheng)}
+                강한 오행: {", ".join(strong_ohengs)}
+                조절 오행: {", ".join(control_ohengs)}
             """
 
             llm_output = generate_llm_response(
@@ -734,14 +764,14 @@ async def create_chatroom(
     initial_message_content = None
 
     greeting_message_content = (
-        "안녕! 나는 오늘의 운세에 맞춰 행운의 맛집을 추천해주는 '밥풀이'야🍀 "
-        "지금 너한테 딱 맞는 메뉴 추천해줄까?"
+        "안녕! 나는 오늘의 운세에 맞춰 행운의 맛집을 추천해주는 '밥풀이'야🍀 지금 너한테 딱 맞는 메뉴 추천해줄까? 먹고 싶은 메뉴 고르면 식당도 알려줄게!"
     )
     greeting_message = ChatMessage(
         room_id=chatroom.id,
         role="assistant",
         content=greeting_message_content,
         sender_id="assistant",
+        message_type="greeting",
     )
     db.add(greeting_message)
     db.commit()
@@ -1020,6 +1050,36 @@ async def send_message(
             status_code=404, detail="채팅방을 찾을 수 없음"
         )
 
+    # 추천 기준 설명 요청 처리
+    if request.message == "[REQUEST_RECOMMENDATION_GUIDE]":
+        # 사용자별 맞춤 메시지 생성
+        oheng_explanation = await generate_oheng_explanation(uid, db)
+        
+        guide_message = ChatMessage(
+            room_id=request.room_id,
+            sender_id="assistant",
+            role="assistant",
+            content=oheng_explanation,
+            message_type="recommendation_guide",
+            timestamp=datetime.datetime.utcnow(),
+        )
+        db.add(guide_message)
+        db.commit()
+        db.refresh(guide_message)
+        
+        chatroom.last_message_id = guide_message.id
+        db.add(chatroom)
+        db.commit()
+        
+        return {
+            "reply": {
+                "role": "assistant",
+                "content": oheng_explanation,
+                "message_type": "recommendation_guide",
+            },
+            "user_message_id": None,
+        }
+        
     chat_message = ChatMessage(
         room_id=chatroom.id,
         sender_id=uid,
