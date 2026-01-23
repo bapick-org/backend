@@ -1,10 +1,14 @@
 import asyncio
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 import firebase_admin
 from firebase_admin import credentials
 import os
 from dotenv import load_dotenv
+
+from core.exceptions import AppException
 from api import auth, users, chat, saju, restaurants, scraps, friends, reservations
 from core.s3 import initialize_s3_client
 from vectordb.vectordb_util import get_embeddings, get_chroma_client
@@ -15,6 +19,40 @@ load_dotenv(dotenv_path=ENV_PATH, override=True)
 
 app = FastAPI()
 
+# --- 에러 핸들러 ---
+# 1. 커스텀 예외 핸들러 (Conflict, NotFound 등)
+@app.exception_handler(AppException)
+async def app_exception_handler(request: Request, exc: AppException):
+    """
+    우리가 직접 정의한 AppException이 발생하면 
+    해당 에러 객체 내부의 status_code와 detail을 꺼내 응답합니다.
+    """
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=exc.detail
+    )
+
+# 2. Pydantic 검증 에러 핸들러 (Field, EmailStr, 타입 오류 등)
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    입력값 검증 실패(422) 시 발생하는 에러를 
+    우리가 정한 규격(code, message)에 맞춰 가공합니다.
+    """
+    errors = exc.errors()
+    # 첫 번째 에러 정보 위주로 메시지 구성
+    first_error = errors[0]
+    field = first_error.get("loc")[-1]  # 에러가 난 필드명
+    msg = first_error.get("msg")       # 에러 메시지
+    
+    return JSONResponse(
+        status_code=400, # 검증 에러는 400 Bad Request로 통일
+        content={
+            "code": "VALIDATION_ERROR",
+            "message": f"입력값이 올바르지 않습니다: {field} ({msg})"
+        }
+    )
+    
 # 파이어베이스 초기화
 def initialize_firebase_sync():
     RENDER_KEY_PATH = "/etc/secrets/firebase-key.json"
