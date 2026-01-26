@@ -28,21 +28,21 @@ async def register(
     # 2. 데이터 가공
     # birth_date 처리: 문자열 -> date 객체 변환
     try:
-        birth_date = datetime.datetime.strptime(data.birthDate, "%Y-%m-%d").date()
+        birth_date = datetime.datetime.strptime(data.birth_date, "%Y-%m-%d").date()
     except ValueError:
         raise BadRequestException("날짜 형식이 올바르지 않습니다. (YYYY-MM-DD)")
     
     # birth_time 처리
     birth_time = None;
-    if not data.timeUnknown:
+    if not data.time_unknown:
         try:
-            hour = int(data.birthHour)
-            minute = int(data.birthMinute)
+            hour = int(data.birth_hour)
+            minute = int(data.birth_minute)
             if not (0 <= hour < 24) or not (0 <= minute < 60):
                 raise ValueError
             birth_time = datetime.time(hour=hour, minute=minute)
         except ValueError:
-            raise BadRequestException("출생 시간이 올바르지 않습니다.")
+            raise BadRequestException("출생 시간이 올바르지 않습니다. (HH:MM)")
 
     # 3. User 객체 생성 및 저장
     user = User(
@@ -52,7 +52,7 @@ async def register(
         gender=data.gender,
         birth_date=birth_date,
         birth_time=birth_time,
-        birth_calendar=data.birthCalendar
+        birth_calendar=data.birth_calendar
     )
     
     try:
@@ -60,11 +60,8 @@ async def register(
         db.commit() # 먼저 커밋해 락을 해제하고 유저 확정
         db.refresh(user)
             
-        # 시간이 걸리는 사주 계산 및 저장 작업 수행
+        # 사주 계산 및 저장 작업 수행
         await calculate_saju_and_save(user=user, db=db)
-        
-        # 사주 계산 후 유저 정보 다시 갱신
-        db.commit()
     except Exception as e:
         # 하나라도 실패하면 전체 취소 (트랜잭션 롤백)
         db.rollback()
@@ -124,18 +121,18 @@ async def register_guest(
     if not user:
         # 1) 데이터 가공
         try:
-            birth_date = datetime.datetime.strptime(data.birthDate, "%Y-%m-%d").date()
+            birth_date = datetime.datetime.strptime(data.birth_date, "%Y-%m-%d").date()
         except ValueError:
-            raise BadRequestException("날짜 형식이 올바르지 않습니다.")
+            raise BadRequestException("날짜 형식이 올바르지 않습니다. (YYYY-MM-DD)")
 
         birth_time = None
-        if not data.timeUnknown:
+        if not data.time_unknown:
             try:
-                hour = int(data.birthHour)
-                minute = int(data.birthMinute)
+                hour = int(data.birth_hour)
+                minute = int(data.birth_minute)
                 birth_time = datetime.time(hour=hour, minute=minute)
             except ValueError:
-                raise BadRequestException("출생 시간이 올바르지 않습니다.")
+                raise BadRequestException("출생 시간이 올바르지 않습니다. (HH:MM)")
         
         # 2) 게스트 유저 생성 및 사주 계산
         try:
@@ -147,7 +144,7 @@ async def register_guest(
                 gender=data.gender,
                 birth_date=birth_date,
                 birth_time=birth_time,
-                birth_calendar=data.birthCalendar,
+                birth_calendar=data.birth_calendar,
             )
             
             db.add(user)

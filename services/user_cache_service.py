@@ -30,11 +30,11 @@ class UserCacheService:
             if data:
                 profile = json.loads(data)
                 # date/time 객체 복원
-                if profile.get("birthDate"):
-                    profile["birthDate"] = date.fromisoformat(profile["birthDate"])
-                if profile.get("birthTime"):
-                    h, m = map(int, profile["birthTime"].split(":"))
-                    profile["birthTime"] = dt_time(h, m)
+                if profile.get("birth_date"):
+                    profile["birth_date"] = date.fromisoformat(profile["birth_date"])
+                if profile.get("birth_time"):
+                    h, m = map(int, profile["birth_time"].split(":"))
+                    profile["birth_time"] = dt_time(h, m)
                 
                 logger.info(f"캐시 HIT: user:{uid}")
                 return profile
@@ -59,16 +59,16 @@ class UserCacheService:
                     "email": user.email,
                     "nickname": user.nickname,
                     "gender": user.gender,
-                    "birthDate": user.birth_date.isoformat() if user.birth_date else None,
-                    "birthTime": user.birth_time.strftime("%H:%M") if user.birth_time else None,
-                    "birthCalendar": user.birth_calendar,
-                    "profileImage": user.profile_image,
-                    "ohengWood": float(user.oheng_wood) if user.oheng_wood else 0.0,
-                    "ohengFire": float(user.oheng_fire) if user.oheng_fire else 0.0,
-                    "ohengEarth": float(user.oheng_earth) if user.oheng_earth else 0.0,
-                    "ohengMetal": float(user.oheng_metal) if user.oheng_metal else 0.0,
-                    "ohengWater": float(user.oheng_water) if user.oheng_water else 0.0,
-                    "daySky": user.day_sky,
+                    "birth_date": user.birth_date.isoformat() if user.birth_date else None,
+                    "birth_time": user.birth_time.strftime("%H:%M") if user.birth_time else None,
+                    "birth_calendar": user.birth_calendar,
+                    "profile_image": user.profile_image,
+                    "oheng_wood": float(user.oheng_wood) if user.oheng_wood else 0.0,
+                    "oheng_fire": float(user.oheng_fire) if user.oheng_fire else 0.0,
+                    "oheng_earth": float(user.oheng_earth) if user.oheng_earth else 0.0,
+                    "oheng_metal": float(user.oheng_metal) if user.oheng_metal else 0.0,
+                    "oheng_water": float(user.oheng_water) if user.oheng_water else 0.0,
+                    "day_sky": user.day_sky,
                 }
             elif isinstance(user, dict):
                 # dict인 경우 그대로 사용 (필요한 변환만 수행)
@@ -76,16 +76,16 @@ class UserCacheService:
                     "email": user.get("email"),
                     "nickname": user.get("nickname"),
                     "gender": user.get("gender"),
-                    "birthDate": user["birthDate"].isoformat() if isinstance(user.get("birthDate"), date) else user.get("birthDate"),
-                    "birthTime": user["birthTime"].strftime("%H:%M") if isinstance(user.get("birthTime"), dt_time) else user.get("birthTime"),
-                    "birthCalendar": user.get("birthCalendar"),
-                    "profileImage": user.get("profileImage"),
-                    "ohengWood": float(user.get("ohengWood", 0.0)),
-                    "ohengFire": float(user.get("ohengFire", 0.0)),
-                    "ohengEarth": float(user.get("ohengEarth", 0.0)),
-                    "ohengMetal": float(user.get("ohengMetal", 0.0)),
-                    "ohengWater": float(user.get("ohengWater", 0.0)),
-                    "daySky": user.get("daySky"),
+                    "birth_date": user["birth_date"].isoformat() if isinstance(user.get("birth_date"), date) else user.get("birth_date"),
+                    "birth_time": user["birth_time"].strftime("%H:%M") if isinstance(user.get("birth_time"), dt_time) else user.get("birth_time"),
+                    "birth_calendar": user.get("birth_calendar"),
+                    "profile_image": user.get("profile_image"),
+                    "oheng_wood": float(user.get("oheng_wood", 0.0)),
+                    "oheng_fire": float(user.get("oheng_fire", 0.0)),
+                    "oheng_earth": float(user.get("oheng_earth", 0.0)),
+                    "oheng_metal": float(user.get("oheng_metal", 0.0)),
+                    "oheng_water": float(user.get("oheng_water", 0.0)),
+                    "day_sky": user.get("day_sky"),
                 }
             else:
                 raise ValueError(f"Unsupported type for user: {type(user)}")
