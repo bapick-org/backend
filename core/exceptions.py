@@ -10,14 +10,13 @@ class AppException(HTTPException):
         message: str,
         details: Optional[dict] = None
     ):
-        detail = {
-            "code": code,
-            "message": message
-        }
-        if details:
-            detail["details"] = details
+        super().__init__(status_code=status_code, detail=message)
+        
+        # 핸들러에서 꺼내 쓸 수 있도록 객체에 직접 저장
+        self.code = code
+        self.message = message
+        self.extra_details = details
             
-        super().__init__(status_code=status_code, detail=detail)
 
 
 # AppException를 상속받아 구체적인 에러 정의
