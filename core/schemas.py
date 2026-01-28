@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
 from pydantic.alias_generators import to_camel
-from typing import Optional
+from typing import List, Optional, Dict
 from datetime import date, time
 
 
@@ -83,3 +83,12 @@ class PresignedUrlRequest(BaseConfigModel):
 class PresignedUrlResponse(BaseConfigModel):
     presigned_url: str
     s3_key: str
+
+# --- 사주 관련 ---
+class SajuAnalysisResponse(BaseConfigModel):
+    headline: str = Field(..., example="금(金) 기운이 강하고, 목(木) 기운이 부족한 하루예요!")
+    advice: str
+    oheng_scores: Dict[str, float]
+    
+    class Config:
+        from_attributes = True
