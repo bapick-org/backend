@@ -7,7 +7,7 @@
     <img width="960" height="540" alt="main" src="https://github.com/user-attachments/assets/3ae20c0e-4ce6-44a2-8f50-4c32221b5b3c" />
   </p>
   
-  **[🚀 서비스 바로가기](https://bapick.kr)** | **[📖 API 문서](https://bapick.duckdns.org/docs)** 
+  **[🚀 서비스 바로가기](https://bapick.kr)** | **[📖 API 명세서](https://bapick.duckdns.org/docs)** 
   
 </div>
 
