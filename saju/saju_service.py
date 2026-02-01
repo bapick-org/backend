@@ -8,6 +8,19 @@ from core.models import User, Manse
 from saju.saju_calculator import get_time_pillar, calculate_oheng_score
 from saju.saju_data import get_ten_star, get_five_circle_from_char
 
+# 한글 오행 키 리스트
+OHENG_KOREAN_KEYS = ["목(木)", "화(火)", "토(土)", "금(金)", "수(水)"]
+
+# DB 필드와 매핑이 필요한 경우
+KOREAN_TO_DB_MAP = {
+    "목(木)": "oheng_wood",
+    "화(火)": "oheng_fire",
+    "토(土)": "oheng_earth",
+    "금(金)": "oheng_metal",
+    "수(水)": "oheng_water"
+}
+
+
 # Manse 테이블에서 자시, 절입 시간 보정
 def _get_manse_record(
     db: Session, 
