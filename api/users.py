@@ -12,7 +12,7 @@ from core.models import User
 from core.s3 import get_s3_client, S3_BUCKET_NAME, S3_REGION 
 from core.schemas import UserUpdateRequest, UserInfoResponse, PresignedUrlRequest, PresignedUrlResponse
 from core.exceptions import BadRequestException, NotFoundException, InternalServerErrorException
-from saju.saju_service import calculate_today_saju_iljin, recalculate_and_update_saju
+from saju.saju_service import calculate_saju_and_save
 from services.user_cache_service import UserCacheService
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -71,36 +71,9 @@ async def get_my_info(
         
         # UserInfoResponse에 정의된 필드만 추출 (Pydantic을 활용한 DB 객체 직렬화)
         user_dict = UserInfoResponse.model_validate(user).model_dump(by_alias=False)
-    
-        # 오행 계산을 위해 필요한 중간 데이터(day_sky)는 Redis 캐시에만 잠시 보관
-        user_dict["day_sky"] = user.day_sky
         cache_service.set_user_profile(uid, user_dict)
 
-    # 3. 오행 계산 여부 판단: 오행 관련 필드가 포함된 경우에만 계산 수행
-    oheng_keys = {"oheng_wood", "oheng_fire", "oheng_earth", "oheng_metal", "oheng_water"}
-    should_calculate_oheng = bool(requested_fields & oheng_keys)
-
-    # 4. 오행 계산 및 캐싱
-    if should_calculate_oheng:
-        # 오늘 날짜에 대한 계산 결과가 이미 캐시에 있는지 확인
-        cached_oheng = cache_service.get_user_today_oheng(uid, today)
-        if cached_oheng:
-            user_dict.update(cached_oheng)
-        else:
-            # 1) 캐시 히트인 경우 -> user는 None이므로 user_dict(캐시 데이터)로 복원 (db 재조회 방지)
-            # 2) DB 조회 한 경우 -> user가 있으므로 복원 과정 생략
-            if not user:
-                user = User(**user_dict)
-            try:
-                iljin_data = await calculate_today_saju_iljin(user, db)
-                user_dict.update(iljin_data["today_oheng_percentages"])
-
-                # 계산 결과 하루 단위 캐싱 (불필요한 중복 계산 방지)
-                cache_service.set_user_today_oheng(uid, today, iljin_data["today_oheng_percentages"])
-            except Exception:
-                pass # 실패 시 기본 프로필 정보만 Fallback
-    
-    # 5. 최종 필터링: 클라이언트가 요청한 필드만 추출
+    # 3. 최종 필터링: 클라이언트가 요청한 필드만 추출
     user_dict = {k: v for k, v in user_dict.items() if k in requested_fields}
 
     return user_dict
@@ -188,7 +161,7 @@ async def patch_my_info(
 
     # 3. 변경 사항이 있을 때만 사주 재계산
     if is_saju_data_changed:
-        await recalculate_and_update_saju(user, db)
+        await calculate_saju_and_save(user, db)
 
     db.commit()
     db.refresh(user)

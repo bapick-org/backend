@@ -19,12 +19,10 @@ from api.chain import (
     generate_llm_response,
     get_initial_chat_message,
     search_and_recommend_restaurants,
-    get_latest_recommended_foods,
     generate_oheng_explanation,
 )
 
-from api.saju import _get_oheng_analysis_data
-from saju.message_generator import define_oheng_messages
+from saju.saju_service import get_today_saju_analysis
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -534,25 +532,13 @@ async def handle_websocket_message(
         print("📜 HISTORY:", conversation_history)
         print("============================\n")
 
-        current_foods = get_latest_recommended_foods(db, room_id)
-
         try:
             # 오행 정보 로딩
-            lacking_oheng, strong_oheng_db, oheng_type, oheng_scores = (
-                await _get_oheng_analysis_data(uid, db)
-            )
-            (
-                headline,
-                advice,
-                recommended_ohengs_weights,
-                control_ohengs,
-                strong_ohengs,
-            ) = define_oheng_messages(
-                lacking_oheng,
-                strong_oheng_db,
-                oheng_type,
-                oheng_scores
-            )
+            data = await get_today_saju_analysis(uid, db)
+
+            lacking_oheng = data["lacking_oheng"]
+            strong_ohengs = data["strong_ohengs"]
+            control_ohengs = data["control_ohengs"]
 
             oheng_info_text = f"""
                 부족한 오행: {", ".join(lacking_oheng)}
@@ -563,7 +549,6 @@ async def handle_websocket_message(
             llm_output = generate_llm_response(
                 conversation_history,
                 user_message_for_llm,
-                current_recommended_foods=current_foods,
                 oheng_info_text=oheng_info_text,
             )
 
@@ -1139,20 +1124,11 @@ async def send_message(
         print("📜 HISTORY:", conversation_history)
         print("============================\n")
 
-        current_foods = get_latest_recommended_foods(db, chatroom.id)
-
-        lacking_oheng, strong_oheng_db, oheng_type, oheng_scores = (
-            await _get_oheng_analysis_data(uid, db)
-        )
-        (
-            headline,
-            advice,
-            recommended_ohengs_weights,
-            control_ohengs,
-            strong_ohengs,
-        ) = define_oheng_messages(
-            lacking_oheng, strong_oheng_db, oheng_type, oheng_scores
-        )
+        data = await get_today_saju_analysis(uid, db)
+    
+        lacking_oheng = data["lacking_oheng"]
+        strong_ohengs = data["strong_ohengs"]
+        control_ohengs = data["control_ohengs"]
 
         oheng_info_text = f"""
         부족한 오행: {", ".join(lacking_oheng)}
@@ -1163,7 +1139,6 @@ async def send_message(
         llm_output = generate_llm_response(
             conversation_history,
             user_message_for_llm,
-            current_recommended_foods=current_foods,
             oheng_info_text=oheng_info_text,
         )
 

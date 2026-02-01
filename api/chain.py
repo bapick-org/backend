@@ -8,8 +8,7 @@ from langchain_chroma import Chroma
 from core.config import GEMMA_API_KEY
 from core.models import ChatMessage, Restaurant, ChatRoom
 from core.geo import calculate_distance
-from api.saju import _get_oheng_analysis_data
-from saju.message_generator import define_oheng_messages
+from saju.saju_service import get_today_saju_analysis
 from vectordb.vectordb_util import get_embeddings, get_chroma_client, COLLECTION_NAME_RESTAURANTS
 
 client = genai.Client(api_key=GEMMA_API_KEY)
@@ -46,12 +45,11 @@ OHAENG_FOOD_LISTS = {
 # 사용자의 오행 상태를 기반으로 메뉴 추천 설명 메시지 생성
 async def generate_oheng_explanation(uid: str, db: Session) -> str:
     # 오행 정보 가져오기
-    lacking_oheng, strong_oheng_db, oheng_type, oheng_scores = (
-        await _get_oheng_analysis_data(uid, db)
-    )
-    _, _, _, control_ohengs, strong_ohengs = define_oheng_messages(
-        lacking_oheng, strong_oheng_db, oheng_type, oheng_scores
-    )
+    data = await get_today_saju_analysis(uid, db)
+    
+    lacking_oheng = data["lacking_oheng"]
+    strong_ohengs = data["strong_ohengs"]
+    control_ohengs = data["control_ohengs"]
     
     # 오행별 음식 예시
     oheng_food_examples = {
@@ -180,12 +178,11 @@ def generate_concise_advice(lacking_oheng: List[str], strong_oheng: List[str], c
 # 초기 메시지 반환
 async def get_initial_chat_message(uid: str, db: Session) -> str:
     # 사주 데이터 불러오기
-    lacking_oheng, strong_oheng_db, oheng_type, oheng_scores = await _get_oheng_analysis_data(uid, db)
+    data = await get_today_saju_analysis(uid, db)
     
-    # 메시지 생성 로직 (strong_ohengs 정보를 가져옴)
-    headline, advice, recommended_ohengs_weights, control_ohengs, strong_ohengs = define_oheng_messages(
-        lacking_oheng, strong_oheng_db, oheng_type, oheng_scores
-    )
+    lacking_oheng = data["lacking_oheng"]
+    strong_ohengs = data["strong_ohengs"]
+    control_ohengs = data["control_ohengs"]
     
     initial_message = generate_concise_advice(
         lacking_oheng=lacking_oheng, 
@@ -210,7 +207,7 @@ def build_conversation_history(db: Session, chatroom_id: int) -> str:
     conversation_history = ""
     
     for msg in recent_messages:
-        if msg.message_type in ["hidden_initial", "oheng_info", "location_select"]:
+        if msg.message_type in ["oheng_info", "location_select"]:
             continue
         
         role = "사용자" if msg.role == "user" else "봇"
@@ -420,14 +417,8 @@ def is_initial_recommendation_request(user_message: str, conversation_history: s
 def generate_llm_response(
     conversation_history: str, 
     user_message: str, 
-    current_recommended_foods: List[str] = None ,
     oheng_info_text: str = ""
     ) -> str:
-    # 지금까지 추천한 메뉴 목록을 문자열로 변환
-    current_foods_str = ', '.join(current_recommended_foods or [])
-    print(f"[DEBUG] current_recommended_foods: {current_foods_str}")
-    
-
     prompt = f"""
     너는 오늘의 운세와 오행 기운에 맞춰 음식을 추천해주는 챗봇 '밥풀이'야. 
     너의 목표는 사용자의 운세에 부족한 오행 기운을 채워줄 수 있는 음식을 추천하는 거야. 
@@ -465,42 +456,3 @@ def generate_llm_response(
     llm_response_text = response.text.strip()
         
     return llm_response_text
-
-
-
-def generate_intent(user_message):
-    prompt = f"""
-    너는 사용자의 메시지를 분석해 intent와 menu를 결정하는 시스템이다.
-
-    규칙:
-    1. "불고기 먹을래", "칼국수 먹고싶어" → intent="SELECT", menu="불고기"
-    2. "뭐먹지", "골라줘" → intent="RANDOM", menu=""
-    3. "매운거", "따뜻한거" → intent="SUGGEST", menu="매운"
-    4. "그건 싫어", "말고" → intent="REJECT", menu=""
-    5. 위에 없으면 SMALLTALK
-
-    출력은 반드시 다음 형식:
-    intent="..."; menu="..."
-    """
-
-    response = client.models.generate_content(
-        model=model_name,
-        contents=[prompt]
-    )
-    return response.text.strip()
-
-
-def get_latest_recommended_foods(db: Session, room_id: int) -> List[str]:
-    """
-    최근 추천된 음식 목록을 ChatRoom(selected_menu 또는 별도 테이블)에 저장해두고
-    여기서 다시 불러오는 구조라면 이 함수가 필요함.
-    다만 네 구조상 selected_menu 만 저장되므로,
-    일단 selected_menu만 리스트로 감싸서 반환하도록 작성해둔다.
-    """
-
-    chatroom = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
-
-    if not chatroom or not chatroom.selected_menu:
-        return []
-
-    return [chatroom.selected_menu]
