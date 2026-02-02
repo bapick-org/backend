@@ -1,7 +1,7 @@
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
 from pydantic.alias_generators import to_camel
 from typing import List, Optional, Dict
-from datetime import date, time
+from datetime import date, datetime, time
 
 
 # 공통 설정: 이 설정을 가진 모델은 JSON 변환 시 자동으로 카멜 케이스가 됩니다.
@@ -92,3 +92,58 @@ class SajuAnalysisResponse(BaseConfigModel):
     
     class Config:
         from_attributes = True
+        
+# --- 스크랩 관련 ---
+class ScrapCreate(BaseConfigModel):
+    restaurant_id: int
+    collection_id: int | None = None
+
+class CollectionCreate(BaseConfigModel):
+    name: str
+
+class CollectionResponse(BaseConfigModel):
+    id: int
+    name: str
+    image_url: str = ""
+    created_at: datetime
+    has_scraps: bool
+
+    @classmethod
+    def from_orm_custom(cls, collection, latest_scrap):
+        """DB 객체를 응답용 스키마로 변환하는 헬퍼 메서드"""
+        image_url = ""
+        if latest_scrap and latest_scrap.restaurant and latest_scrap.restaurant.image:
+            image_field = latest_scrap.restaurant.image
+            images = [url.strip() for url in image_field.split(',') if url.strip()]
+            if images:
+                image_url = images[0]
+        
+        return cls(
+            id=collection.id,
+            name=collection.name,
+            image_url=image_url,
+            created_at=collection.created_at,
+            has_scraps=latest_scrap is not None
+        )
+    
+# 스크랩 단건 응답 (생성/조회 시 사용)
+class ScrapResponse(BaseConfigModel):
+    user_id: int
+    restaurant_id: int
+    collection_id: Optional[int] = None
+    created_at: datetime
+
+# 내 스크랩 목록용 (식당 정보 포함)
+class RestaurantInfo(BaseConfigModel):
+    id: int
+    name: str
+    category: Optional[str] = None
+    address: Optional[str] = None
+    image: Optional[str] = None
+
+class MyScrapResponse(BaseConfigModel):
+    restaurant: RestaurantInfo
+    is_scrapped: bool = True
+    
+class ScrapStatusResponse(BaseConfigModel):
+    is_scrapped: bool
