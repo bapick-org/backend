@@ -6,7 +6,7 @@ from core.firebase_auth import verify_firebase_token
 from core.db import get_db
 from core.models import User
 from core.schemas import RegisterRequest, GuestRegisterRequest, UserResponse
-from core.exceptions import BadRequestException, ConflictException, NotFoundException, InternalServerErrorException
+from core.exceptions import BadRequestException, ConflictException, UnauthorizedException, InternalServerErrorException
 from saju.saju_service import calculate_saju_and_save
 
 
@@ -91,7 +91,7 @@ async def login(
     # 1. DB에서 사용자 확인
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
-        raise NotFoundException(resource="사용자")
+        raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
     
     # 2. 보안 쿠키 설정
     response.set_cookie(

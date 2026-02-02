@@ -1,12 +1,9 @@
 from fastapi import APIRouter, Depends, Depends
 from sqlalchemy.orm import Session
-from typing import Dict, Tuple, List
 
 from core.firebase_auth import verify_firebase_token
 from core.db import get_db
-from core.models import User
 from core.schemas import SajuAnalysisResponse
-from core.exceptions import NotFoundException, InternalServerErrorException
 from saju.saju_service import get_today_saju_analysis
 
 router = APIRouter(prefix="/saju", tags=["saju"])

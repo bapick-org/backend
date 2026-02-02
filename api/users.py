@@ -11,7 +11,7 @@ from core.db import get_db
 from core.models import User
 from core.s3 import get_s3_client, S3_BUCKET_NAME, S3_REGION 
 from core.schemas import UserUpdateRequest, UserInfoResponse, PresignedUrlRequest, PresignedUrlResponse
-from core.exceptions import BadRequestException, NotFoundException, InternalServerErrorException
+from core.exceptions import BadRequestException, UnauthorizedException, InternalServerErrorException
 from saju.saju_service import calculate_saju_and_save
 from services.user_cache_service import UserCacheService
 
@@ -67,7 +67,7 @@ async def get_my_info(
     if not user_dict:
         user = db.query(User).filter(User.firebase_uid == uid).first()
         if not user:
-            raise NotFoundException(resource="사용자")
+            raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
         
         # UserInfoResponse에 정의된 필드만 추출 (Pydantic을 활용한 DB 객체 직렬화)
         user_dict = UserInfoResponse.model_validate(user).model_dump(by_alias=False)
@@ -120,7 +120,7 @@ async def patch_my_info(
     cache_service = UserCacheService()
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
-        raise NotFoundException(resource="사용자")
+        raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
 
     is_saju_data_changed = False
 
