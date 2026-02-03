@@ -104,7 +104,7 @@ class CollectionCreate(BaseConfigModel):
 class CollectionResponse(BaseConfigModel):
     id: int
     name: str
-    image_url: str = ""
+    image_url: Optional[str] = ""
     created_at: datetime
     has_scraps: bool
 

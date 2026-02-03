@@ -41,7 +41,7 @@ def create_user_collection(
     return {
         "id": new_collection.id,
         "name": new_collection.name,
-        "image_url": None,
+        "image_url": "",
         "created_at": new_collection.created_at,
         "has_scraps": False
     }
