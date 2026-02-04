@@ -107,6 +107,7 @@ class CollectionResponse(BaseConfigModel):
     image_url: Optional[str] = ""
     created_at: datetime
     has_scraps: bool
+    is_system_default: bool = False  # 모든 스크랩 카드
 
     @classmethod
     def from_orm_custom(cls, collection, latest_scrap):
@@ -145,5 +146,9 @@ class MyScrapResponse(BaseConfigModel):
     restaurant: RestaurantInfo
     is_scrapped: bool = True
     
+class CollectionScrapsResponse(BaseConfigModel):
+    collection_name: str
+    scraps: List[MyScrapResponse]    
+
 class ScrapStatusResponse(BaseConfigModel):
     is_scrapped: bool

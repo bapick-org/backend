@@ -6,12 +6,65 @@ from core.db import get_db
 from core.firebase_auth import verify_firebase_token
 from core.models import User, Scrap, Collection
 from core.exceptions import NotFoundException, ConflictException, UnauthorizedException
-from core.schemas import ScrapCreate, CollectionCreate, CollectionResponse, MyScrapResponse, ScrapResponse, ScrapStatusResponse
+from core.schemas import ScrapCreate, CollectionCreate, CollectionResponse, MyScrapResponse, ScrapResponse, CollectionScrapsResponse, ScrapStatusResponse
 
-router = APIRouter(prefix="/scraps", tags=["scraps"])
+router = APIRouter()
 
-# 컬렉션 생성
-@router.post("/collections", response_model=CollectionResponse, status_code=status.HTTP_201_CREATED)
+scrapRouter = APIRouter(prefix="/scraps", tags=["scraps"])
+collectionRouter = APIRouter(prefix="/collections", tags=["collections"])
+
+
+# GET /api/collections: 전체 컬렉션 목록 조회 - 각 컬렉션 정보와 대표 이미지 포함
+@collectionRouter.get("", response_model=list[CollectionResponse])
+def get_my_collections(
+    db: Session = Depends(get_db),
+    uid: str = Depends(verify_firebase_token)
+):
+    user = db.query(User).filter(User.firebase_uid == uid).first()
+    if not user:
+        raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
+    
+    response_list = []
+
+    # "모든 스크랩" 가상 컬렉션 생성: 해당 유저의 스크랩 중 가장 최근 스크랩의 식당 이미지 가져오기
+    total_latest_scrap = db.query(Scrap)\
+        .options(joinedload(Scrap.restaurant))\
+        .filter(Scrap.user_id == user.id)\
+        .order_by(Scrap.created_at.desc())\
+        .first()
+
+    mock_all_collection = Collection(
+        id=0, 
+        name="모든 스크랩", 
+        created_at=datetime.utcnow()
+    )
+
+    all_card = CollectionResponse.from_orm_custom(mock_all_collection, total_latest_scrap)
+    all_card.is_system_default = True # 시스템 기본 카드로 표시
+    response_list.append(all_card)
+    
+    collections = db.query(Collection)\
+        .filter(Collection.user_id == user.id)\
+        .order_by(Collection.created_at.desc())\
+        .all()
+        
+    for collection in collections:
+        # 가장 최근 스크랩 1개만 가져옴
+        latest_scrap = db.query(Scrap)\
+            .options(joinedload(Scrap.restaurant))\
+            .filter(Scrap.collection_id == collection.id)\
+            .order_by(Scrap.created_at.desc())\
+            .first()
+
+        response_list.append(
+            CollectionResponse.from_orm_custom(collection, latest_scrap)
+        )
+        
+    return response_list
+
+
+# POST /api/collections: 컬렉션 생성
+@collectionRouter.post("", response_model=CollectionResponse, status_code=status.HTTP_201_CREATED)
 def create_user_collection(
     collection_data: CollectionCreate,
     db: Session = Depends(get_db),
@@ -46,39 +99,9 @@ def create_user_collection(
         "has_scraps": False
     }
     
-# 컬렉션 목록 조회
-@router.get("/collections", response_model=list[CollectionResponse])
-def get_my_collections(
-    db: Session = Depends(get_db),
-    uid: str = Depends(verify_firebase_token)
-):
-    user = db.query(User).filter(User.firebase_uid == uid).first()
-    if not user:
-        raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
-
-    collections = db.query(Collection)\
-        .filter(Collection.user_id == user.id)\
-        .order_by(Collection.created_at.desc())\
-        .all()
     
-    response_list = []
-
-    for collection in collections:
-        # 가장 최근 스크랩 1개만 가져옴
-        latest_scrap = db.query(Scrap)\
-            .options(joinedload(Scrap.restaurant))\
-            .filter(Scrap.collection_id == collection.id)\
-            .order_by(Scrap.created_at.desc())\
-            .first()
-
-        response_list.append(
-            CollectionResponse.from_orm_custom(collection, latest_scrap)
-        )
-        
-    return response_list
-
-# 컬렉션 삭제
-@router.delete("/collections/{collection_id}", status_code=status.HTTP_204_NO_CONTENT)
+# DELETE /api/collections/{id}: 특정 컬렉션 삭제
+@collectionRouter.delete("/{collection_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_user_collection(
     collection_id: int,
     db: Session = Depends(get_db),
@@ -109,10 +132,46 @@ def delete_user_collection(
 
     return
 
-# 스크랩 목록 조회
-@router.get("", response_model=list[MyScrapResponse])
+
+# GET /api/collections/{id}/scraps: 특정 컬렉션 내 스크랩 목록 조회
+@collectionRouter.get("/{collection_id}/scraps", response_model=CollectionScrapsResponse)
+def get_scraps_in_collection(
+    collection_id: int,
+    db: Session = Depends(get_db),
+    uid: str = Depends(verify_firebase_token)
+):
+    user = db.query(User).filter(User.firebase_uid == uid).first()
+    if not user:
+        raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
+
+    # 1. 컬렉션 존재 여부 및 이름 확인
+    collection = db.query(Collection).filter(
+        Collection.id == collection_id,
+        Collection.user_id == user.id
+    ).first()
+
+    if not collection:
+        raise NotFoundException(resource="컬렉션")
+
+    # 2. 해당 컬렉션의 스크랩 목록 조회
+    # joinedload를 통해 restaurant 정보를 미리 가져옴
+    scraps = db.query(Scrap)\
+        .options(joinedload(Scrap.restaurant))\
+        .filter(Scrap.user_id == user.id, Scrap.collection_id == collection_id)\
+        .order_by(Scrap.created_at.desc())\
+        .all()
+        
+    # 3. 최종 반환
+    return {
+        "collection_name": collection.name,
+        "scraps": scraps
+    }
+
+
+
+# GET /api/scraps: 전체 스크랩 목록 조회
+@scrapRouter.get("", response_model=list[MyScrapResponse])
 def get_my_scraps(
-    collection_id: int | None = None,
     db: Session = Depends(get_db),
     uid: str = Depends(verify_firebase_token)
 ):
@@ -121,18 +180,17 @@ def get_my_scraps(
         raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
 
     # 스크랩 확인: joinedload를 통해 restaurant 정보를 미리 가져옴
-    query = db.query(Scrap).options(joinedload(Scrap.restaurant)).filter(Scrap.user_id == user.id)
-
-    if collection_id is not None:
-        query = query.filter(Scrap.collection_id == collection_id)
-        
-    scraps = query.order_by(Scrap.created_at.desc()).all()
+    scraps = db.query(Scrap)\
+        .options(joinedload(Scrap.restaurant))\
+        .filter(Scrap.user_id == user.id)\
+        .order_by(Scrap.created_at.desc())\
+        .all()
 
     # 최종 반환 (Pydantic이 'restaurant' 필드를 찾아 RestaurantInfo 스키마로 자동 매핑함)
     return scraps
 
-# 스크랩 추가
-@router.post("", response_model=ScrapResponse, status_code=status.HTTP_201_CREATED)
+# POST /api/scraps/restaurants/{id}: 식당 스크랩 추가
+@scrapRouter.post("/restaurants/{restaurant_id}", response_model=ScrapResponse, status_code=status.HTTP_201_CREATED)
 def create_scrap(
     scrap_data: ScrapCreate,
     db: Session = Depends(get_db),
@@ -164,8 +222,8 @@ def create_scrap(
     return new_scrap
 
 
-# 스크랩 상태 확인
-@router.get("/{restaurant_id}", response_model=ScrapStatusResponse)
+# GET /api/scraps/restaurants/{id}: 식당 스크랩 상태 확인
+@scrapRouter.get("/restaurants/{restaurant_id}", response_model=ScrapStatusResponse)
 def get_scrap_status(
     restaurant_id: int,
     db: Session = Depends(get_db),
@@ -182,8 +240,9 @@ def get_scrap_status(
 
     return {"is_scrapped": bool(scrap)}
 
-# 스크랩 삭제
-@router.delete("/{restaurant_id}", status_code=status.HTTP_204_NO_CONTENT)
+
+# DELETE /api/scraps/restaurants/{id}: 식당 스크랩 삭제
+@scrapRouter.delete("/restaurants/{restaurant_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_scrap(
     restaurant_id: int,
     db: Session = Depends(get_db),
@@ -204,3 +263,8 @@ def delete_scrap(
     db.commit()
     
     return
+
+
+
+router.include_router(scrapRouter)
+router.include_router(collectionRouter)
