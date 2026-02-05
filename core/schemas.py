@@ -84,6 +84,7 @@ class PresignedUrlResponse(BaseConfigModel):
     presigned_url: str
     s3_key: str
 
+
 # --- 사주 관련 ---
 class SajuAnalysisResponse(BaseConfigModel):
     headline: str = Field(..., example="금(金) 기운이 강하고, 목(木) 기운이 부족한 하루예요!")
@@ -93,14 +94,13 @@ class SajuAnalysisResponse(BaseConfigModel):
     class Config:
         from_attributes = True
         
+        
 # --- 스크랩 관련 ---
-class ScrapCreate(BaseConfigModel):
-    restaurant_id: int
-    collection_id: int | None = None
-
-class CollectionCreate(BaseConfigModel):
+# 컬렉션 생성 요청
+class CollectionCreateRequest(BaseConfigModel):
     name: str
 
+# 컬렉션 응답
 class CollectionResponse(BaseConfigModel):
     id: int
     name: str
@@ -126,15 +126,8 @@ class CollectionResponse(BaseConfigModel):
             created_at=collection.created_at,
             has_scraps=latest_scrap is not None
         )
-    
-# 스크랩 단건 응답 (생성/조회 시 사용)
-class ScrapResponse(BaseConfigModel):
-    user_id: int
-    restaurant_id: int
-    collection_id: Optional[int] = None
-    created_at: datetime
 
-# 내 스크랩 목록용 (식당 정보 포함)
+# 스크랩된 식당 정보
 class RestaurantInfo(BaseConfigModel):
     id: int
     name: str
@@ -142,13 +135,30 @@ class RestaurantInfo(BaseConfigModel):
     address: Optional[str] = None
     image: Optional[str] = None
 
-class MyScrapResponse(BaseConfigModel):
+# 스크랩 응답 
+class ScrapItemResponse(BaseConfigModel):
     restaurant: RestaurantInfo
     is_scrapped: bool = True
-    
-class CollectionScrapsResponse(BaseConfigModel):
-    collection_name: str
-    scraps: List[MyScrapResponse]    
 
+# 특정 컬렉션 내 스크랩 목록 응답
+class CollectionScrapListResponse(BaseConfigModel):
+    collection_name: str
+    scraps: List[ScrapItemResponse]
+    
+# 스크랩 생성 요청
+class ScrapCreateRequest(BaseConfigModel):
+    restaurant_id: int
+    collection_id: Optional[int] = None
+
+# 스크랩 생성 응답
+class ScrapCreateResponse(BaseConfigModel):
+    user_id: int
+    restaurant_id: int
+    collection_id: Optional[int] = None
+    created_at: datetime
+
+# 스크랩 상태 응답 (특정 식당의 스크랩 여부)
 class ScrapStatusResponse(BaseConfigModel):
     is_scrapped: bool
+    
+    

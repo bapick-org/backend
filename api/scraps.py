@@ -6,7 +6,7 @@ from core.db import get_db
 from core.firebase_auth import verify_firebase_token
 from core.models import User, Scrap, Collection
 from core.exceptions import NotFoundException, ConflictException, UnauthorizedException
-from core.schemas import ScrapCreate, CollectionCreate, CollectionResponse, MyScrapResponse, ScrapResponse, CollectionScrapsResponse, ScrapStatusResponse
+from core.schemas import CollectionCreateRequest, CollectionResponse, CollectionScrapListResponse, ScrapItemResponse, ScrapCreateRequest, ScrapCreateResponse, ScrapStatusResponse
 
 router = APIRouter()
 
@@ -66,7 +66,7 @@ def get_my_collections(
 # POST /api/collections: 컬렉션 생성
 @collectionRouter.post("", response_model=CollectionResponse, status_code=status.HTTP_201_CREATED)
 def create_user_collection(
-    collection_data: CollectionCreate,
+    collection_data: CollectionCreateRequest,
     db: Session = Depends(get_db),
     uid: str = Depends(verify_firebase_token)
 ):
@@ -91,15 +91,9 @@ def create_user_collection(
     db.commit()
     db.refresh(new_collection)
 
-    return {
-        "id": new_collection.id,
-        "name": new_collection.name,
-        "image_url": "",
-        "created_at": new_collection.created_at,
-        "has_scraps": False
-    }
-    
-    
+    return CollectionResponse.from_orm_custom(new_collection, None)
+
+
 # DELETE /api/collections/{id}: 특정 컬렉션 삭제
 @collectionRouter.delete("/{collection_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_user_collection(
@@ -119,8 +113,7 @@ def delete_user_collection(
     if not collection:
         raise NotFoundException(resource="컬렉션")
 
-    # 내부 스크랩 처리 (참조 무결성 유지)
-    # 컬렉션은 사라져도 스크랩은 남아야 하므로 collection_id를 NULL로 업데이트
+    # 컬렉션 내부 스크랩 처리 (참조 무결성 유지): 스크랩은 남아야 하므로 collection_id를 NULL로 업데이트
     # synchronize_session=False: 성능 최적화 목적 (삭제 이후에 해당 객체를 파이썬에서 다시 읽어서 작업할 일이 없으므로)
     db.query(Scrap).filter(
         Scrap.collection_id == collection_id,
@@ -134,7 +127,7 @@ def delete_user_collection(
 
 
 # GET /api/collections/{id}/scraps: 특정 컬렉션 내 스크랩 목록 조회
-@collectionRouter.get("/{collection_id}/scraps", response_model=CollectionScrapsResponse)
+@collectionRouter.get("/{collection_id}/scraps", response_model=CollectionScrapListResponse)
 def get_scraps_in_collection(
     collection_id: int,
     db: Session = Depends(get_db),
@@ -157,20 +150,30 @@ def get_scraps_in_collection(
     # joinedload를 통해 restaurant 정보를 미리 가져옴
     scraps = db.query(Scrap)\
         .options(joinedload(Scrap.restaurant))\
-        .filter(Scrap.user_id == user.id, Scrap.collection_id == collection_id)\
+        .filter(
+            Scrap.user_id == user.id,
+            Scrap.collection_id == collection_id
+        )\
         .order_by(Scrap.created_at.desc())\
         .all()
-        
-    # 3. 최종 반환
-    return {
-        "collection_name": collection.name,
-        "scraps": scraps
-    }
 
+    scrap_responses = [
+        ScrapItemResponse(
+            restaurant=scrap.restaurant,
+            is_scrapped=True
+        )
+        for scrap in scraps
+    ]
+
+    # 최종 반환
+    return CollectionScrapListResponse(
+        collection_name=collection.name,
+        scraps=scrap_responses
+    )
 
 
 # GET /api/scraps: 전체 스크랩 목록 조회
-@scrapRouter.get("", response_model=list[MyScrapResponse])
+@scrapRouter.get("", response_model=list[ScrapItemResponse])
 def get_my_scraps(
     db: Session = Depends(get_db),
     uid: str = Depends(verify_firebase_token)
@@ -189,10 +192,11 @@ def get_my_scraps(
     # 최종 반환 (Pydantic이 'restaurant' 필드를 찾아 RestaurantInfo 스키마로 자동 매핑함)
     return scraps
 
-# POST /api/scraps/restaurants/{id}: 식당 스크랩 추가
-@scrapRouter.post("/restaurants/{restaurant_id}", response_model=ScrapResponse, status_code=status.HTTP_201_CREATED)
+
+# POST /api/scraps/restaurants/{id}: 식당 스크랩 생성
+@scrapRouter.post("/restaurants/{restaurant_id}", response_model=ScrapCreateResponse, status_code=status.HTTP_201_CREATED)
 def create_scrap(
-    scrap_data: ScrapCreate,
+    scrap_data: ScrapCreateRequest,
     db: Session = Depends(get_db),
     uid: str = Depends(verify_firebase_token)
 ):    
@@ -219,7 +223,12 @@ def create_scrap(
     db.commit()
     db.refresh(new_scrap)
 
-    return new_scrap
+    return ScrapCreateResponse(
+        user_id=new_scrap.user_id,
+        restaurant_id=new_scrap.restaurant_id,
+        collection_id=new_scrap.collection_id,
+        created_at=new_scrap.created_at,
+    )
 
 
 # GET /api/scraps/restaurants/{id}: 식당 스크랩 상태 확인
