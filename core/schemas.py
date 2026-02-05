@@ -162,3 +162,33 @@ class ScrapStatusResponse(BaseConfigModel):
     is_scrapped: bool
     
     
+# --- 예약 관련 ---
+class ReservationRequest(BaseConfigModel):
+    restaurant_id: int = Field(..., description="식당 ID") 
+    reservation_date: date = Field(..., description="예약 날짜 (YYYY-MM-DD)") 
+    reservation_time: time = Field(..., description="예약 시간 (HH:MM:SS)") 
+    people_count: int = Field(..., description="예약 인원 수")
+    
+class ReservationResponse(BaseConfigModel):
+    id: int
+    restaurant_id: int
+    user_id: int
+    reservation_date: date
+    reservation_time: time
+    people_count: int
+    created_at: datetime 
+    
+    restaurant_name: str 
+
+    @classmethod
+    def from_orm_custom(cls, reservation, restaurant_name: str):
+        return cls(
+            id=reservation.id,
+            restaurant_id=reservation.restaurant_id,
+            user_id=reservation.user_id,
+            reservation_date=reservation.reservation_date,
+            reservation_time=reservation.reservation_time,
+            people_count=reservation.people_count,
+            created_at=reservation.created_at,
+            restaurant_name=restaurant_name
+        )
