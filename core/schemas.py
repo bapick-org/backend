@@ -192,3 +192,91 @@ class ReservationResponse(BaseConfigModel):
             created_at=reservation.created_at,
             restaurant_name=restaurant_name
         )
+        
+# --- 식당 관련 ---
+class MenuResponse(BaseConfigModel):
+    id: int
+    menu_name: Optional[str] = None
+    menu_price: Optional[int] = None 
+
+class OpeningHourResponse(BaseConfigModel):
+    day: Optional[str] = None
+    open_time: Optional[time] = None
+    close_time: Optional[time] = None
+    break_start: Optional[time] = None
+    break_end: Optional[time] = None
+    last_order: Optional[time] = None
+    is_closed: bool
+
+class FacilityResponse(BaseConfigModel):
+    id: int
+    name: Optional[str] = None
+
+class RestaurantReviewResponse(BaseConfigModel):
+    id: int
+    rating: Optional[float] = None
+    visitor_reviews: int = 0
+    blog_reviews: int = 0
+
+# --- 식당 상세 응답 ---
+class RestaurantDetailResponse(BaseConfigModel):
+    id: int
+    name: str
+    category: str
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    image: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    
+    # 관계형 데이터
+    menus: List[MenuResponse] 
+    hours: List[OpeningHourResponse]
+    facilities: List[FacilityResponse]
+    reviews: List[RestaurantReviewResponse]
+
+    @classmethod
+    def from_orm_custom(cls, restaurant):
+        # 복잡한 매핑(예: 시설 정보)을 처리하는 로직
+        # restaurant.facility_associations에서 facility 객체만 추출
+        facility_list = [assoc.facility for assoc in restaurant.facility_associations if assoc.facility]
+        
+        return cls(
+            id=restaurant.id,
+            name=restaurant.name,
+            category=restaurant.category,
+            address=restaurant.address,
+            phone=restaurant.phone,
+            image=restaurant.image,
+            latitude=restaurant.latitude,
+            longitude=restaurant.longitude,
+            menus=restaurant.menus,
+            hours=restaurant.hours,
+            facilities=facility_list,
+            reviews=restaurant.reviews
+        )
+
+# --- 식당 검색 및 목록 응답 ---
+class RestaurantSearchItem(BaseConfigModel):
+    id: int
+    name: str
+    category: str
+    address: Optional[str] = None
+    rating: Optional[float] = None
+
+class RestaurantSearchResult(BaseConfigModel):
+    count: int
+    restaurants: List[RestaurantSearchItem]
+    
+class NearbyRestaurantResponse(BaseConfigModel):
+    id: int
+    name: str
+    category: str
+    address: Optional[str] = None
+    image: Optional[str] = None
+    latitude: float
+    longitude: float
+    rating: Optional[float] = None
+    review_count: int
+    distance_km: float
+    distance_m: int
