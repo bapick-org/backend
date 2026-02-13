@@ -1,7 +1,7 @@
 from typing import List
 from datetime import datetime
 from sqlalchemy.orm import relationship
-from sqlalchemy import Column, Integer, String, Date, Time, DateTime, Boolean, Float, Text, ForeignKey, Enum, DECIMAL
+from sqlalchemy import Column, Integer, String, Date, Time, DateTime, Boolean, Float, Text, ForeignKey, Enum, DECIMAL, UniqueConstraint
 from core.db import Base
 
 class User(Base):
@@ -197,18 +197,24 @@ class Reviews(Base):
     
 class Friendships(Base):
     __tablename__ = "Friendships"
-
-    requester_id = Column(Integer, ForeignKey('Users.id'), primary_key=True, nullable=False)
-    receiver_id = Column(Integer, ForeignKey('Users.id'), primary_key=True, nullable=False)
-    status = Column(Enum('pending', 'accepted', 'rejected', name='friendship_status'), nullable=False, default='pending')
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    requester_id = Column(Integer, ForeignKey('Users.id'), nullable=False)
+    receiver_id = Column(Integer, ForeignKey('Users.id'), nullable=False)
+    status = Column(
+        Enum('pending', 'accepted', 'rejected', name='friendship_status'), 
+        nullable=False, 
+        default='pending'
+    )
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-
-    # User와의 관계 설정
+    
+    __table_args__ = (
+        UniqueConstraint('requester_id', 'receiver_id', name='uq_friendship_pair'),
+    )
+    
     requester = relationship("User", foreign_keys=[requester_id], back_populates="sent_friend_requests")
     receiver = relationship("User", foreign_keys=[receiver_id], back_populates="received_friend_requests")
-
-    def __repr__(self):
-        return f"<Friendships(requester_id={self.requester_id}, receiver_id={self.receiver_id}, status='{self.status}')>"
     
 class Collection(Base):
     __tablename__ = "Collections"
