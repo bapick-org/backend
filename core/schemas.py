@@ -76,13 +76,27 @@ class UserInfoResponse(BaseConfigModel):
     class Config:
         from_attributes = True
         
+# S3 presigned url 생성 요청
 class PresignedUrlRequest(BaseConfigModel):
     file_name: str
     content_type: str
 
+# S3 presigned url 생성 응답
 class PresignedUrlResponse(BaseConfigModel):
     presigned_url: str
     s3_key: str
+
+# 개별 사용자 응답
+class UserSearchItemResponse(BaseConfigModel):
+    firebase_uid: str
+    nickname: Optional[str]
+    profile_image: Optional[str]
+    relation_status: str
+
+# 사용자 검색 응답
+class UserSearchResponse(BaseConfigModel):
+    data: List[UserSearchItemResponse]
+    count: int
 
 
 # --- 사주 관련 ---
@@ -280,3 +294,52 @@ class NearbyRestaurantResponse(BaseConfigModel):
     review_count: int
     distance_km: float
     distance_m: int
+    
+
+# -- 친구 --
+# 친구 개인 정보 (친구 목록용)
+class FriendItemResponse(BaseConfigModel):
+    firebase_uid: str
+    nickname: Optional[str]
+    profile_image: Optional[str]
+
+# 친구 목록 응답
+class FriendsListResponse(BaseConfigModel):
+    data: List[FriendItemResponse]
+    count: int
+
+# 친구 요청 개별 정보 (요청 목록용)
+class FriendRequestItemResponse(BaseConfigModel):
+    id: int
+    requester_uid: str
+    nickname: Optional[str]
+    profile_image: Optional[str]
+    created_at: datetime
+
+# 친구 요청 목록 응답
+class FriendRequestsListResponse(BaseConfigModel):
+    data: List[FriendRequestItemResponse]
+    count: int
+    
+# 친구 요청 생성
+class FriendRequestCreateRequest(BaseConfigModel):
+    receiver_uid: str 
+
+# 친구 요청 처리 (수락/거절)
+class FriendRequestUpdateRequest(BaseConfigModel):
+    action: str = Field(..., pattern="^(accept|reject)$", description="친구 요청 처리 액션. accept 또는 reject만 허용")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "action": "accept"
+            }
+        }
+
+# 친구 요청 응답 (생성/처리 시)
+class FriendRequestResponse(BaseConfigModel):
+    id: int
+    requester_uid: str
+    receiver_uid: str
+    status: str
+    created_at: datetime

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_
+from sqlalchemy.orm import Session, aliased
 from botocore.exceptions import ClientError
 from datetime import date, time
 from pydantic import BaseModel, ConfigDict
@@ -8,9 +9,9 @@ from typing import Optional
 
 from core.firebase_auth import verify_firebase_token
 from core.db import get_db
-from core.models import User
+from core.models import User, Friendships
 from core.s3 import get_s3_client, S3_BUCKET_NAME, S3_REGION 
-from core.schemas import UserUpdateRequest, UserInfoResponse, PresignedUrlRequest, PresignedUrlResponse
+from core.schemas import UserUpdateRequest, UserInfoResponse, PresignedUrlRequest, PresignedUrlResponse, UserSearchItemResponse, UserSearchResponse
 from core.exceptions import BadRequestException, UnauthorizedException, InternalServerErrorException
 from saju.saju_service import calculate_saju_and_save
 from services.user_cache_service import UserCacheService
@@ -47,6 +48,77 @@ def get_requested_fields(fields: Optional[str] = Query(None)):
         if field_info.alias in raw_requested or field_name in raw_requested:
             requested_fields.add(field_name)
     return requested_fields
+
+
+# GET /users: 닉네임으로 사용자 검색 
+@router.get("", response_model=UserSearchResponse)
+def search_users(
+    keyword: Optional[str] = Query(None),
+    uid: str = Depends(verify_firebase_token),
+    db: Session = Depends(get_db),
+):
+    if not keyword:
+        return UserSearchResponse(data=[], count=0)
+
+    me = db.query(User).filter(User.firebase_uid == uid).first()
+    if not me:
+        raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
+
+    FriendshipAlias = aliased(Friendships)
+
+    query = (
+        db.query(User, FriendshipAlias)
+        .outerjoin(
+            FriendshipAlias,
+            or_(
+                and_(
+                    FriendshipAlias.requester_id == me.id,
+                    FriendshipAlias.receiver_id == User.id,
+                ),
+                and_(
+                    FriendshipAlias.requester_id == User.id,
+                    FriendshipAlias.receiver_id == me.id,
+                ),
+            ),
+        )
+        .filter(
+            User.nickname.ilike(f"%{keyword.strip()}%"),
+            User.id != me.id,
+        )
+        .limit(50)
+    )
+
+    results = query.all()
+
+    response_data = []
+
+    for user_obj, friendship in results:
+        relation_status = "none"
+
+        if friendship:
+            if friendship.status == "accepted":
+                relation_status = "friend"
+            elif friendship.status == "pending":
+                if friendship.requester_id == me.id:
+                    relation_status = "sent_request"
+                else:
+                    relation_status = "received_request"
+            elif friendship.status == "rejected":
+                relation_status = "none"
+                
+        response_data.append(
+            UserSearchItemResponse(
+                firebase_uid=user_obj.firebase_uid,
+                nickname=user_obj.nickname,
+                profile_image=user_obj.profile_image,
+                relation_status=relation_status,
+            )
+        )
+
+    return UserSearchResponse(
+        data=response_data,
+        count=len(response_data),
+    )
 
 
 # GET /users/me - 정보 조회 API
