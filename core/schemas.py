@@ -343,3 +343,66 @@ class FriendRequestResponse(BaseConfigModel):
     receiver_uid: str
     status: str
     created_at: datetime
+
+
+# --- 채팅 관련 ---
+# 채팅방 생성 요청
+class ChatRoomCreateRequest(BaseConfigModel):
+    name: Optional[str] = Field(None, max_length=100)
+    is_group: bool = False
+    members: Optional[List[str]] = None
+
+# 채팅방 생성 응답
+class ChatRoomCreateResponse(BaseConfigModel):
+    id: int
+    name: str
+    is_group: bool
+    initial_message: str
+
+# 메시지 전송 요청
+class MessageSendRequest(BaseConfigModel):
+    message: str
+
+# 메시지 응답 데이터 (중첩용)
+class MessageReplyData(BaseConfigModel):
+    role: str
+    content: str
+    message_type: str
+
+# 메시지 전송 응답
+class MessageSendResponse(BaseConfigModel):
+    reply: Optional[MessageReplyData] = None
+    user_message_id: Optional[int] = None
+    message: Optional[str] = None  # LLM 미호출 시
+
+# 멤버 프로필 (채팅방 목록용)
+class MemberProfile(BaseConfigModel):
+    nickname: Optional[str]
+    profile_image: Optional[str]
+
+# 채팅방 목록 응답
+class ChatroomListResponse(BaseConfigModel):
+    id: int
+    name: str
+    is_group: bool
+    last_message_content: Optional[str]
+    last_message_timestamp: Optional[str]
+    member_count: Optional[int]
+    member_profiles: Optional[List[MemberProfile]] = None
+
+# 개별 메시지 응답
+class MessageItemResponse(BaseConfigModel):
+    id: int
+    role: str
+    sender_id: str
+    sender_name: str
+    sender_profile_url: Optional[str]
+    content: str
+    message_type: str
+    timestamp: datetime
+
+# 메시지 목록 응답
+class MessageListResponse(BaseConfigModel):
+    messages: List[MessageItemResponse]
+    is_group: bool
+    chatroom_name: str

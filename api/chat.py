@@ -4,16 +4,22 @@ import datetime
 import pytz
 import logging
 from typing import Optional, List, Dict, Any
-
-from fastapi import APIRouter, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, status, WebSocket, WebSocketDisconnect, Response, Query
 from sqlalchemy.orm import Session, joinedload
-from pydantic import BaseModel
-
 from core.db import get_db
 from core.models import ChatRoom, ChatMessage, ChatroomMember, User
 from core.firebase_auth import verify_firebase_token, get_user_uid_from_websocket_token
 from core.websocket_manager import ConnectionManager, get_connection_manager
-
+from core.schemas import (
+    ChatRoomCreateRequest,
+    ChatRoomCreateResponse, 
+    ChatroomListResponse, 
+    MessageSendRequest,
+    MessageSendResponse,
+    MessageItemResponse,
+    MessageListResponse
+)
+from core.exceptions import *
 from api.chain import (
     build_conversation_history,
     generate_llm_response,
@@ -21,30 +27,14 @@ from api.chain import (
     search_and_recommend_restaurants,
     generate_oheng_explanation,
 )
-
 from saju.saju_service import get_today_saju_analysis
 
-router = APIRouter(prefix="/chat", tags=["chat"])
+router = APIRouter(prefix="/chatrooms", tags=["Chatrooms"])
 logger = logging.getLogger(__name__)
 
 # KST 시간대 정의 (UTC+9)
 KST = pytz.timezone("Asia/Seoul")
 UTC = pytz.timezone("UTC")
-
-# 요청 모델
-class MessageRequest(BaseModel):
-    room_id: int
-    message: str
-
-
-class ChatRoomCreateRequest(BaseModel):
-    name: Optional[str] = None
-    is_group: bool = False
-    invited_uids: Optional[List[str]] = None  # 초대한 사용자 목록
-
-
-Chat_rooms: Dict[str, list] = {}
-
 
 # -------------------------------
 # 메뉴 / 위치 선택 관련 유틸
@@ -275,138 +265,21 @@ def process_location_selection_tag(
 def chat_message_to_json(
     msg: ChatMessage,
     sender_name: str,
-    current_user_uid: str,
     sender_profile_url: Optional[str] = None,
 ) -> dict:
-    is_me = msg.sender_id == current_user_uid
-
-    return {
-        "id": msg.id,
-        "room_id": msg.room_id,
-        "sender_id": msg.sender_id,
-        "sender_name": sender_name,
-        "sender_profile_url": sender_profile_url,
-        "role": msg.role,
-        "content": msg.content,
-        "message_type": msg.message_type,
-        "timestamp": msg.timestamp.isoformat(),
-        "is_me": is_me,
-    }
-
-
-# -------------------------------
-# WebSocket용 식당 추천(직접 호출용)
-# -------------------------------
-
-async def handle_restaurant_recommendation(
-    room_id: int,
-    selected_menu: str,
-    db: Session,
-    manager: ConnectionManager,
-    chatroom: ChatRoom,
-):
-    """
-    필요하다면 MENU 선택 후 바로 추천할 때 쓰는 함수.
-    지금 구조에서는 LOCATION_SELECTED에서 바로 DB저장 + 브로드캐스트를 하므로,
-    현재는 안 써도 됨. (남겨두긴 함)
-    """
-    restaurant_data = search_and_recommend_restaurants(selected_menu, db)
-
-    initial_msg_content = restaurant_data.get("initial_message")
-    initial_message = ChatMessage(
-        room_id=room_id,
-        sender_id="assistant",
-        role="assistant",
-        content=initial_msg_content,
-        message_type="text",
-        timestamp=datetime.datetime.utcnow(),
+    message_data = MessageItemResponse(
+        id=msg.id,
+        sender_id=msg.sender_id,
+        sender_name=sender_name,
+        sender_profile_url=sender_profile_url,
+        role=msg.role,
+        content=msg.content,
+        message_type=msg.message_type,
+        timestamp=msg.timestamp
     )
-    db.add(initial_message)
-    db.flush()
+    
+    return message_data.model_dump(mode='json', by_alias=True)
 
-    await manager.broadcast(
-        room_id,
-        json.dumps(
-            {
-                "type": "new_message",
-                "message": {
-                    "id": initial_message.id,
-                    "role": "assistant",
-                    "sender_name": "밥풀이",
-                    "content": initial_msg_content,
-                    "message_type": "text",
-                    "timestamp": initial_message.timestamp.isoformat(),
-                },
-            }
-        ),
-    )
-
-    card_data = {
-        "restaurants": restaurant_data.get("restaurants", []),
-        "count": restaurant_data.get("count", 0),
-    }
-    card_msg_content = json.dumps(card_data, ensure_ascii=False)
-    card_message = ChatMessage(
-        room_id=room_id,
-        sender_id="assistant",
-        role="assistant",
-        content=card_msg_content,
-        message_type="restaurant_cards",
-        timestamp=datetime.datetime.utcnow() + datetime.timedelta(seconds=1),
-    )
-    db.add(card_message)
-    db.flush()
-
-    await manager.broadcast(
-        room_id,
-        json.dumps(
-            {
-                "type": "new_message",
-                "message": {
-                    "id": card_message.id,
-                    "role": "assistant",
-                    "sender_name": "밥풀이",
-                    "content": card_msg_content,
-                    "message_type": "restaurant_cards",
-                    "timestamp": card_message.timestamp.isoformat(),
-                },
-            }
-        ),
-    )
-
-    final_msg_content = restaurant_data.get("final_message")
-    final_message = ChatMessage(
-        room_id=room_id,
-        sender_id="assistant",
-        role="assistant",
-        content=final_msg_content,
-        message_type="text",
-        timestamp=datetime.datetime.utcnow() + datetime.timedelta(seconds=2),
-    )
-    db.add(final_message)
-    db.commit()
-    db.refresh(final_message)
-
-    await manager.broadcast(
-        room_id,
-        json.dumps(
-            {
-                "type": "new_message",
-                "message": {
-                    "id": final_message.id,
-                    "role": "assistant",
-                    "sender_name": "밥풀이",
-                    "content": final_msg_content,
-                    "message_type": "text",
-                    "timestamp": final_message.timestamp.isoformat(),
-                },
-            }
-        ),
-    )
-
-    chatroom.last_message_id = final_message.id
-    db.add(chatroom)
-    db.commit()
 
 
 # -------------------------------
@@ -443,7 +316,7 @@ async def handle_websocket_message(
         db.refresh(guide_message)
         
         # 브로드캐스트
-        bot_msg_json = chat_message_to_json(guide_message, "밥풀이", uid)
+        bot_msg_json = chat_message_to_json(guide_message, "밥풀이")
         await manager.broadcast(
             room_id,
             json.dumps({"type": "new_message", "message": bot_msg_json}),
@@ -474,8 +347,9 @@ async def handle_websocket_message(
     # LOCATION_SELECTED는 프론트에 그대로 보여줄 필요 없으니 브로드캐스트 생략
     if not is_location_message:
         user_msg_json = chat_message_to_json(
-            chat_message, user.nickname, uid, sender_profile_url
+            chat_message, user.nickname, sender_profile_url
         )
+        
         await manager.broadcast(
             room_id,
             json.dumps({"type": "new_message", "message": user_msg_json}),
@@ -495,7 +369,7 @@ async def handle_websocket_message(
                 )
                 if db_message:
                     bot_msg_json = chat_message_to_json(
-                        db_message, "밥풀이", uid
+                        db_message, "밥풀이"
                     )
                     await manager.broadcast(
                         room_id,
@@ -582,7 +456,7 @@ async def handle_websocket_message(
             )
             if assistant_message:
                 bot_msg_json = chat_message_to_json(
-                    assistant_message, "밥풀이", uid
+                    assistant_message, "밥풀이"
                 )
                 await manager.broadcast(
                     room_id,
@@ -606,7 +480,7 @@ async def handle_websocket_message(
         db.refresh(assistant_message)
 
         bot_msg_json = chat_message_to_json(
-            assistant_message, "밥풀이", uid
+            assistant_message, "밥풀이"
         )
         await manager.broadcast(
             room_id,
@@ -691,24 +565,26 @@ async def websocket_endpoint(
 
 
 # -------------------------------
-# 채팅방 생성
+# POST /chatrooms: 채팅방 생성
 # -------------------------------
 
-@router.post("/create")
+@router.post("", response_model=ChatRoomCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_chatroom(
     data: ChatRoomCreateRequest,
+    response: Response, 
     uid: str = Depends(verify_firebase_token),
     db: Session = Depends(get_db),
 ):
+    # 1. 사용자 확인
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
-        raise HTTPException(
-            status_code=404, detail="등록되지 않은 사용자입니다."
-        )
+        logger.warning(f"Chatroom create rejected | actor_uid={uid} | reason=user_not_found")
+        raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
 
+    # 2. 멤버 목록 구성
     all_member_uids = [uid]
-    if data.is_group and data.invited_uids:
-        for invited_uid in data.invited_uids:
+    if data.is_group and data.members:
+        for invited_uid in data.members:
             if invited_uid != uid and invited_uid not in all_member_uids:
                 all_member_uids.append(invited_uid)
 
@@ -718,6 +594,7 @@ async def create_chatroom(
         .all()
     )
 
+    # 3. 채팅방 이름 설정
     if data.name:
         final_room_name = data.name
     elif not data.is_group:
@@ -730,144 +607,157 @@ async def create_chatroom(
         else:
             final_room_name = ", ".join(nicknames)
 
-    chatroom = ChatRoom(name=final_room_name, is_group=data.is_group)
-    db.add(chatroom)
-    db.commit()
-    db.refresh(chatroom)
-
-    for member_user in members_to_add:
-        role = "owner" if member_user.id == user.id else "member"
-        member = ChatroomMember(
-            user_id=member_user.id,
-            chatroom_id=chatroom.id,
-            role=role,
-            joined_at=datetime.datetime.utcnow(),
+    try:
+        greeting_message_content = (
+            "안녕! 나는 오늘의 운세에 맞춰 행운의 맛집을 추천해주는 '밥풀이'야🍀 지금 너한테 딱 맞는 메뉴 추천해줄까? 먹고 싶은 메뉴 고르면 식당도 알려줄게!"
         )
-        db.add(member)
-
-    last_message_id = None
-    initial_message_content = None
-
-    greeting_message_content = (
-        "안녕! 나는 오늘의 운세에 맞춰 행운의 맛집을 추천해주는 '밥풀이'야🍀 지금 너한테 딱 맞는 메뉴 추천해줄까? 먹고 싶은 메뉴 고르면 식당도 알려줄게!"
-    )
-    greeting_message = ChatMessage(
-        room_id=chatroom.id,
-        role="assistant",
-        content=greeting_message_content,
-        sender_id="assistant",
-        message_type="greeting",
-    )
-    db.add(greeting_message)
-    db.commit()
         
+        detailed_message_content = await get_initial_chat_message(uid, db)
+    except Exception as e:
+        logger.error(
+            f"Chatroom create failed | actor_uid={uid} | reason=saju_calculation_error | error={str(e)}",
+            exc_info=True
+        )
+        raise InternalServerErrorException("초기 메시지 생성 중 오류가 발생했습니다.")
+    
+    try:
+        # 4. 채팅방 생성
+        chatroom = ChatRoom(name=final_room_name, is_group=data.is_group)
+        db.add(chatroom)
+        db.flush()
+
+        # 5. 멤버 추가
+        for member_user in members_to_add:
+            role = "owner" if member_user.id == user.id else "member"
+            member = ChatroomMember(
+                user_id=member_user.id,
+                chatroom_id=chatroom.id,
+                role=role,
+                joined_at=datetime.datetime.utcnow(),
+            )
+            db.add(member)
+
+        # 6. 인사말 메시지
+        greeting_message = ChatMessage(
+            room_id=chatroom.id,
+            role="assistant",
+            content=greeting_message_content,
+            sender_id="assistant",
+            message_type="greeting",
+        )
+        db.add(greeting_message)
+        db.flush()
+            
+        # 7. 초기 오행 분석 메시지
+        detailed_message = ChatMessage(
+            room_id=chatroom.id,
+            role="assistant",
+            content=detailed_message_content,
+            sender_id="assistant",
+            message_type="hidden_initial",
+        )
+        db.add(detailed_message)
+
+        # 8. 마지막 메시지 설정
+        chatroom.last_message_id = greeting_message.id
         
-    detailed_message_content = await get_initial_chat_message(uid, db)
-    detailed_message = ChatMessage(
-        room_id=chatroom.id,
-        role="assistant",
-        content=detailed_message_content,
-        sender_id="assistant",
-        message_type="hidden_initial",
-    )
-    db.add(detailed_message)
-    db.commit()
+        # 9. 한 번에 커밋
+        db.commit()
+        db.refresh(chatroom)
 
+        response.headers["Location"] = f"/chatrooms/{chatroom.id}"
+        
+        logger.info(f"Chatroom created | chatroom_id={chatroom.id} | owner_uid={uid} | is_group={data.is_group}")
 
-    last_message_id = greeting_message.id
-    initial_message_content = greeting_message_content
-
-    chatroom.last_message_id = last_message_id
-    db.add(chatroom)
-    db.commit()
-
-    room_id_str = str(chatroom.id)
-    Chat_rooms[room_id_str] = []
-
-    return {
-        "message": "채팅방 생성 완료",
-        "chatroom_id": room_id_str,
-        "is_group": chatroom.is_group,
-        "name": final_room_name,
-        "initial_message": initial_message_content,
-    }
+        # 10. 최종 응답
+        return {
+            "id": chatroom.id,
+            "name": final_room_name,
+            "is_group": chatroom.is_group,
+            "initial_message": greeting_message_content,
+        }
+    except Exception as e:
+        db.rollback()
+        logger.error(
+            f"Chatroom creation failed | actor_uid={uid} | is_group={data.is_group} | error={str(e)}",
+            exc_info=True
+        )
+        raise InternalServerErrorException(message="채팅방 생성 중 서버 오류가 발생했습니다.")
 
 
 # -------------------------------
-# 채팅방 목록 조회
+# GET /chatrooms: 채팅방 목록 조회
 # -------------------------------
 
-@router.get("/list")
+@router.get("", response_model=List[ChatroomListResponse])
 async def list_chatrooms(
+    is_group: Optional[bool] = Query(None, alias="isGroup"),
     uid: str = Depends(verify_firebase_token),
-    is_group: Optional[bool] = None,
     db: Session = Depends(get_db),
 ):
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
-        raise HTTPException(
-            status_code=404, detail="등록되지 않은 사용자입니다."
+        logger.warning(f"chatrooms fetch rejected | actor_uid={uid} | reason=user_not_found")
+        raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
+    
+    try:
+        query = (
+            db.query(ChatRoom)
+            .join(ChatroomMember)
+            .filter(ChatroomMember.user_id == user.id)
         )
 
-    query = (
-        db.query(ChatRoom)
-        .join(ChatroomMember)
-        .filter(ChatroomMember.user_id == user.id)
-    )
+        if is_group is not None:
+            query = query.filter(ChatRoom.is_group == is_group)
 
-    if is_group is not None:
-        query = query.filter(ChatRoom.is_group == is_group)
+        rooms = query.options(joinedload(ChatRoom.latest_message)).all()
 
-    rooms = query.options(joinedload(ChatRoom.latest_message)).all()
+        result = []
+        for room in rooms:
+            latest_msg = room.latest_message
+            latest_content = latest_msg.content if latest_msg else "대화 내용 없음"
+            latest_timestamp = latest_msg.timestamp if latest_msg else None
 
-    result = []
-    for room in rooms:
-        latest_msg = room.latest_message
-        latest_content = (
-            latest_msg.content if latest_msg else "대화 내용 없음"
-        )
-        latest_timestamp = latest_msg.timestamp if latest_msg else None
-
-        member_count = None
-        member_profiles: List[Dict[str, Optional[str]]] = []
-
-        if room.is_group:
-            member_count = (
-                db.query(ChatroomMember)
-                .filter(ChatroomMember.chatroom_id == room.id)
-                .count()
-            )
-
-            members = (
-                db.query(User)
-                .join(ChatroomMember)
-                .filter(
-                    ChatroomMember.chatroom_id == room.id,
-                    User.id != user.id,
+            member_count = None
+            member_profiles = []
+            
+            if room.is_group:
+                member_count = (
+                    db.query(ChatroomMember)
+                    .filter(ChatroomMember.chatroom_id == room.id)
+                    .count()
                 )
-                .limit(4)
-                .all()
-            )
 
-            member_profiles = [
-                {
-                    "nickname": m.nickname,
-                    "profile_image": m.profile_image or None,
-                }
-                for m in members
-            ]
+                members = (
+                    db.query(User)
+                    .join(ChatroomMember)
+                    .filter(
+                        ChatroomMember.chatroom_id == room.id,
+                        User.id != user.id,
+                    )
+                    .limit(4)
+                    .all()
+                )
 
-        kst_timestamp = None
-        if latest_timestamp:
-            if latest_timestamp.tzinfo is None:
-                utc_dt = UTC.localize(latest_timestamp)
-            else:
-                utc_dt = latest_timestamp.astimezone(UTC)
-            kst_dt = utc_dt.astimezone(KST)
-            kst_timestamp = kst_dt.isoformat()
+                member_profiles = [
+                    {
+                        "nickname": m.nickname,
+                        "profile_image": m.profile_image or None,
+                    }
+                    for m in members
+                ]
+                
+            # 메시지 전송 시각 KST 변환
+            kst_timestamp = None
+            if latest_timestamp:
+                if latest_timestamp.tzinfo is None:
+                    utc_dt = UTC.localize(latest_timestamp)
+                else:
+                    utc_dt = latest_timestamp.astimezone(UTC)
+                kst_dt = utc_dt.astimezone(KST)
+                kst_timestamp = kst_dt.isoformat()
 
-        result.append(
-            {
+            result.append({
                 "id": room.id,
                 "name": room.name,
                 "is_group": room.is_group,
@@ -875,97 +765,22 @@ async def list_chatrooms(
                 "last_message_timestamp": kst_timestamp,
                 "member_count": member_count,
                 "member_profiles": member_profiles,
-            }
-        )
+            })
 
-    return result
+        return result
+    except Exception as e:
+        logger.error(
+            f"Chatrooms fetch failed | actor_uid={uid} | error={str(e)}",
+            exc_info=True
+        )
+        raise InternalServerErrorException("채팅방 목록 조회 중 오류가 발생했습니다.")
 
 
 # -------------------------------
-# 특정 채팅방의 메시지 조회
+# DELETE /chatrooms/{room_jd}: 채팅방 삭제
 # -------------------------------
 
-@router.get("/messages/{room_id}")
-async def get_messages(
-    room_id: int,
-    uid: str = Depends(verify_firebase_token),
-    db: Session = Depends(get_db),
-):
-    user = db.query(User).filter(User.firebase_uid == uid).first()
-    if not user:
-        raise HTTPException(
-            status_code=404, detail="사용자 인증 실패"
-        )
-
-    member = (
-        db.query(ChatroomMember)
-        .filter(
-            ChatroomMember.chatroom_id == room_id,
-            ChatroomMember.user_id == user.id,
-        )
-        .first()
-    )
-    if not member:
-        raise HTTPException(
-            status_code=403, detail="이 채팅방에 접근할 권한이 없습니다."
-        )
-
-    chatroom = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
-
-    messages = (
-        db.query(ChatMessage)
-        .filter(ChatMessage.room_id == room_id)
-        .order_by(ChatMessage.timestamp)
-        .all()
-    )
-
-    result = []
-    for msg in messages:
-        sender_profile_url = None
-
-        if msg.sender_id == "assistant":
-            sender_name = "밥풀이"
-        else:
-            sender = (
-                db.query(User)
-                .filter(User.firebase_uid == msg.sender_id)
-                .first()
-            )
-            sender_name = (
-                sender.nickname if sender and sender.nickname else "알 수 없음"
-            )
-            sender_profile_url = sender.profile_image if sender else None
-
-        result.append(
-            {
-                "id": msg.id,
-                "user_id": msg.sender_id,
-                "role": msg.role,
-                "sender_id": msg.sender_id,
-                "sender_name": sender_name,
-                "sender_profile_url": sender_profile_url,
-                "content": msg.content,
-                "message_type": msg.message_type,
-                "timestamp": msg.timestamp.isoformat()
-                if msg.timestamp
-                else None,
-            }
-        )
-
-    return {
-        "messages": result,
-        "is_group": chatroom.is_group if chatroom else False,
-        "chatroom_name": chatroom.name
-        if chatroom
-        else f"채팅방 #{room_id}",
-    }
-
-
-# -------------------------------
-# 채팅방 삭제
-# -------------------------------
-
-@router.delete("/{room_id}")
+@router.delete("/{room_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_chatroom(
     room_id: int,
     uid: str = Depends(verify_firebase_token),
@@ -973,16 +788,59 @@ async def delete_chatroom(
 ):
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="등록되지 않은 사용자입니다.",
-        )
+        logger.warning(f"Chatroom delete rejected | actor_uid={uid} | reason=user_not_found")
+        raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
+
 
     room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
     if not room:
-        return {
-            "message": "채팅방을 찾을 수 없습니다. 이미 삭제되었을 수 있습니다."
-        }
+        logger.warning(f"Chatroom delete rejected | actor_id={user.id} | room_id={room_id} | reason=chatroom_not_found")
+        raise NotFoundException(resource="채팅방")
+    
+    member = (
+        db.query(ChatroomMember)
+        .filter(
+            ChatroomMember.chatroom_id == room_id,
+            ChatroomMember.user_id == user.id,
+        )
+        .first()
+    )
+    if not member:
+        logger.warning(
+            f"Chatrooms delete rejected | actor_id={user.id} | room_id={room_id} | reason=unauthorized"
+        )
+        raise ForbiddenException("이 채팅방을 삭제할 권한이 없습니다.")
+
+    try:
+        db.delete(room)
+        db.commit()
+        logger.info(f"Chatroom deleted | actor_uid={uid} | room_id={room_id}")
+    except Exception as e:
+        db.rollback()
+        logger.error(
+            f"Chatrooms delete failed | actor_id={user.id} | room_id={room_id} | error_msg={str(e)}",
+            exc_info=True
+        )
+        raise InternalServerErrorException("채팅방 삭제 중 오류가 발생했습니다.")
+
+    return
+
+
+
+# -------------------------------
+# GET /chatrooms/{room_id}/messages: 특정 채팅방의 메시지 조회
+# -------------------------------
+
+@router.get("/{room_id}/messages", response_model=MessageListResponse)
+async def get_messages(
+    room_id: int,
+    uid: str = Depends(verify_firebase_token),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.firebase_uid == uid).first()
+    if not user:
+        logger.warning(f"Messages fetch rejected | actor_uid={uid} | reason=user_not_found")
+        raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
 
     member = (
         db.query(ChatroomMember)
@@ -993,116 +851,176 @@ async def delete_chatroom(
         .first()
     )
     if not member:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="이 채팅방을 삭제할 권한이 없습니다.",
+        logger.warning(
+            f"Messages fetch rejected | actor_id={user.id} | room_id={room_id} | reason=unauthorized"
         )
+        raise ForbiddenException("이 채팅방에 접근할 권한이 없습니다.")
 
     try:
-        db.delete(room)
-        db.commit()
+        chatroom = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+
+        messages = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.room_id == room_id)
+            .order_by(ChatMessage.timestamp)
+            .all()
+        )
+
+        # 한 번에 모든 sender 조회 (N+1 쿼리 방지)
+        sender_ids = {msg.sender_id for msg in messages if msg.sender_id != "assistant"}
+        senders = {}
+        if sender_ids:
+            sender_list = db.query(User).filter(User.firebase_uid.in_(sender_ids)).all()
+            senders = {user.firebase_uid: user for user in sender_list}
+            
+        message_list = []
+        for msg in messages:
+            if msg.sender_id == "assistant":
+                sender_name = "밥풀이"
+                sender_profile_url = None
+            else:
+                sender = senders.get(msg.sender_id)
+                sender_name = sender.nickname if sender and sender.nickname else "알 수 없음"
+                sender_profile_url = sender.profile_image if sender else None
+
+            message_list.append({
+                "id": msg.id,
+                "role": msg.role,
+                "sender_id": msg.sender_id,
+                "sender_name": sender_name,
+                "sender_profile_url": sender_profile_url,
+                "content": msg.content,
+                "message_type": msg.message_type,
+                "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
+            })
+
+        return {
+            "messages": message_list,
+            "is_group": chatroom.is_group if chatroom else False,
+            "chatroom_name": chatroom.name if chatroom else f"채팅방 #{room_id}",
+        }
     except Exception as e:
-        db.rollback()
-        print(f"채팅방 삭제 중 오류 발생: {e}")
-
-    return {"message": "채팅방 삭제 완료"}
+        logger.error(
+            f"Messages fetch failed | actor_id={user.id} | room_id={room_id} | error={str(e)}",
+            exc_info=True
+        )
+        raise InternalServerErrorException("메시지 조회 중 오류가 발생했습니다.")
 
 
 # -------------------------------
-# HTTP POST 메시지 전송 (/send)
+# POST /chatrooms/{room_id}/messages: 메시지 전송
 # -------------------------------
 
-@router.post("/send")
+@router.post("/{room_id}/messages", response_model=MessageSendResponse)
 async def send_message(
-    request: MessageRequest,
+    room_id: int,
+    request: MessageSendRequest,
     uid: str = Depends(verify_firebase_token),
     db: Session = Depends(get_db),
     manager: ConnectionManager = Depends(get_connection_manager),
 ):
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
-        raise HTTPException(
-            status_code=404, detail="등록되지 않은 사용자입니다."
-        )
+        logger.warning(f"Chat message send rejected | actor_uid={uid} | reason=user_not_found")
+        raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
 
-    chatroom = (
-        db.query(ChatRoom)
-        .filter(ChatRoom.id == request.room_id)
-        .first()
-    )
+    chatroom = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
     if not chatroom:
-        raise HTTPException(
-            status_code=404, detail="채팅방을 찾을 수 없음"
+        logger.warning(
+            f"Chat message send rejected | actor_id={user.id} | room_id={room_id} | reason=chatroom_not_found"
         )
+        raise NotFoundException(resource="채팅방")
+
 
     # 추천 기준 설명 요청 처리
     if request.message == "[REQUEST_RECOMMENDATION_GUIDE]":
-        # 사용자별 맞춤 메시지 생성
-        oheng_explanation = await generate_oheng_explanation(uid, db)
+        try:
+            # 사용자별 맞춤 메시지 생성
+            oheng_explanation = await generate_oheng_explanation(uid, db)
+            
+            guide_message = ChatMessage(
+                room_id=room_id,
+                sender_id="assistant",
+                role="assistant",
+                content=oheng_explanation,
+                message_type="recommendation_guide",
+                timestamp=datetime.datetime.utcnow(),
+            )
+            db.add(guide_message)
+            db.commit()
+            db.refresh(guide_message)
+            
+            chatroom.last_message_id = guide_message.id
+            db.add(chatroom)
+            db.commit()
+            
+            return {
+                "reply": {
+                    "role": "assistant",
+                    "content": oheng_explanation,
+                    "message_type": "recommendation_guide",
+                },
+                "user_message_id": None,
+            }
+        except Exception as e:
+            db.rollback()
+            logger.error(
+                f"Recommendation guide generation failed | actor_id={user.id} | room_id={room_id} | error={str(e)}",
+                exc_info=True
+            )
+            raise InternalServerErrorException("추천 기준 설명 생성 중 오류가 발생했습니다.")
         
-        guide_message = ChatMessage(
-            room_id=request.room_id,
-            sender_id="assistant",
-            role="assistant",
-            content=oheng_explanation,
-            message_type="recommendation_guide",
+    # 사용자 메시지 저장
+    try:
+        chat_message = ChatMessage(
+            room_id=room_id,
+            sender_id=uid,
+            role="user",
+            content=request.message,
             timestamp=datetime.datetime.utcnow(),
         )
-        db.add(guide_message)
+        db.add(chat_message)
         db.commit()
-        db.refresh(guide_message)
-        
-        chatroom.last_message_id = guide_message.id
-        db.add(chatroom)
-        db.commit()
-        
-        return {
-            "reply": {
-                "role": "assistant",
-                "content": oheng_explanation,
-                "message_type": "recommendation_guide",
-            },
-            "user_message_id": None,
-        }
-        
-    chat_message = ChatMessage(
-        room_id=chatroom.id,
-        sender_id=uid,
-        role="user",
-        content=request.message,
-        timestamp=datetime.datetime.utcnow(),
-    )
-    db.add(chat_message)
-    db.commit()
-    db.refresh(chat_message)
-
-    user_msg_json = chat_message_to_json(
-        chat_message, user.nickname, uid
-    )
+        db.refresh(chat_message)
+    except Exception as e:
+        db.rollback()
+        logger.error(
+            f"Chat message send failed | actor_id={user.id} | room_id={room_id} | error={str(e)}",
+            exc_info=True
+        )
+        raise InternalServerErrorException("메시지 저장 중 오류가 발생했습니다.")
+    
+    # WebSocket 브로드캐스트
+    user_msg_json = chat_message_to_json(chat_message, user.nickname)
     await manager.broadcast(
         chatroom.id,
         json.dumps({"type": "new_message", "message": user_msg_json}),
     )
 
+    # 챗봇 호출 여부
     MENTION_TAG = "@밥풀이"
     is_llm_triggered = (not chatroom.is_group) or (
         chatroom.is_group and MENTION_TAG in request.message
     )
 
     if not is_llm_triggered:
-        chatroom.last_message_id = chat_message.id
-        db.add(chatroom)
-        db.commit()
+        try:
+            chatroom.last_message_id = chat_message.id
+            db.add(chatroom)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Last message update failed | error={str(e)}")
+            
         return {
-            "message": "메시지 전송 완료 (LLM 미호출)",
             "user_message_id": chat_message.id,
         }
-
+        
+    # LLM 처리
     try:
         # 1) LOCATION_SELECTED 먼저 체크
-        user_message_content = request.message
         location_select_result = process_location_selection_tag(
-            db, chatroom, user_message_content, chat_message.id
+            db, chatroom, request.message, chat_message.id
         )
         if location_select_result:
             return location_select_result
@@ -1110,14 +1028,10 @@ async def send_message(
         # 2) 멘션 태그 제거
         user_message_for_llm = request.message
         if chatroom.is_group:
-            user_message_for_llm = request.message.replace(
-                MENTION_TAG, ""
-            ).strip()
+            user_message_for_llm = request.message.replace(MENTION_TAG, "").strip()
 
-        # 3) 기존 대화 내역 + 오행 + current_foods
-        conversation_history = build_conversation_history(
-            db, chatroom.id
-        )
+        # 3) 기존 대화 내역 + 오행 정보
+        conversation_history = build_conversation_history(db, chatroom.id)
 
         print("\n============================")
         print("📩 USER MESSAGE:", user_message_for_llm)
@@ -1142,10 +1056,8 @@ async def send_message(
             oheng_info_text=oheng_info_text,
         )
 
-        # 4) LLM 응답에 MENU_SELECTED → 위치 선택 메시지
-        location_select_reply = process_menu_selection(
-            db, chatroom, llm_output
-        )
+        # 4) MENU_SELECTED 처리: 위치 선택 메시지
+        location_select_reply = process_menu_selection(db, chatroom, llm_output)
         if location_select_reply:
             return {
                 "reply": location_select_reply,
@@ -1153,15 +1065,12 @@ async def send_message(
             }
 
         # 5) 일반 텍스트 응답
-        assistant_reply = llm_output
-        message_type = "text"
-
         assistant_message = ChatMessage(
-            room_id=chatroom.id,
+            room_id=room_id,
             sender_id="assistant",
             role="assistant",
-            content=assistant_reply,
-            message_type=message_type,
+            content=llm_output,
+            message_type="text",
             timestamp=datetime.datetime.utcnow(),
         )
         db.add(assistant_message)
@@ -1172,16 +1081,24 @@ async def send_message(
         db.add(chatroom)
         db.commit()
 
+        logger.info(
+            f"Chat message sent successfully | room_id={room_id} | actor_id={user.id} | "
+            f"is_llm_triggered={is_llm_triggered} | msg_id={chat_message.id}"
+        )
+
         return {
             "reply": {
                 "role": "assistant",
-                "content": assistant_reply,
-                "message_type": message_type,
+                "content": llm_output,
+                "message_type": "text",
             },
             "user_message_id": chat_message.id,
         }
 
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"LLM 처리 중 오류: {e}"
+        logger.error(
+            f"Chat message send failed | actor_id={user.id} | room_id={room_id} | reason=db_error | error_msg={str(e)}",
+            exc_info=True
         )
+        raise InternalServerErrorException(f"메시지 처리 중 오류가 발생했습니다: {str(e)}")
+
