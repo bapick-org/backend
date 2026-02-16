@@ -45,7 +45,7 @@ class User(Base):
 class ChatRoom(Base):
     __tablename__ = "Chat_rooms"
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(30), nullable=True)     
+    name = Column(String(100), nullable=True)     
     is_group = Column(Boolean, nullable=False, default=False)    
     last_message_id = Column(Integer, nullable=True) 
     selected_menu = Column(String(255), nullable=True)
