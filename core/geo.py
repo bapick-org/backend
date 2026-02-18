@@ -1,6 +1,9 @@
+import logging
 import requests
 from math import radians, sin, cos, sqrt, atan2
 from typing import Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 # 주소/장소명을 위도, 경도 좌표로 변환
 def geocode_location(query: str) -> Tuple[Optional[float], Optional[float]]:
@@ -14,8 +17,9 @@ def geocode_location(query: str) -> Tuple[Optional[float], Optional[float]]:
             data = response.json()
             if data:
                 return float(data[0]['lat']), float(data[0]['lon'])
+            logger.warning(f"Geocoding no result | query={query}")
     except Exception as e:
-        print(f"Geocoding Error: {e}")
+        logger.error(f"Geocoding system error | query={query} | error={str(e)}", exc_info=True)
         
     return None, None
 

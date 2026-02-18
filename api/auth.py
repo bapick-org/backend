@@ -1,67 +1,57 @@
-from fastapi import APIRouter, HTTPException, Depends, Response, BackgroundTasks
-from pydantic import BaseModel
-from sqlalchemy.orm import Session
 import datetime
+import logging
+from fastapi import APIRouter, Depends, Response, status
+from sqlalchemy.orm import Session
+from core.firebase_auth import verify_firebase_token
+from core.db import get_db
+from core.models import User
+from core.schemas import RegisterRequest, GuestRegisterRequest, UserResponse
+from core.exceptions import BadRequestException, ConflictException, UnauthorizedException, InternalServerErrorException
+from saju.saju_service import calculate_saju_and_save
 
-from core.firebase_auth import verify_firebase_token # Firebase ID 토큰 검증
-from core.db import get_db # DB 세션 의존성
-from core.models import User # SQLAlchemy User 모델
+logger = logging.getLogger(__name__)
 
-from saju.saju_service import calculate_saju_and_save # 사주 계산 및 저장 함수
+router = APIRouter(prefix="/auth", tags=["Auth"])
 
-router = APIRouter(prefix="/auth", tags=["auth"])
-
-# 회원가입 요청 모델
-class RegisterRequest(BaseModel):
-    email: str
-    nickname: str
-    gender: str
-    birthCalendar: str
-    birthDate: str
-    birthHour: str
-    birthMinute: str
-    timeUnknown: bool
-
-# 게스트용 요청 모델
-class GuestLoginRequest(BaseModel):
-    nickname: str
-    gender: str
-    birthCalendar: str
-    birthDate: str
-    birthHour: str
-    birthMinute: str
-    timeUnknown: bool
-    
-# 회원가입 API
-@router.post("/register")
-async def register_user(
+# POST /auth/signup - 회원가입 API
+@router.post("/signup", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def register(
     response: Response,
     data: RegisterRequest,
     uid: str = Depends(verify_firebase_token),
     db: Session = Depends(get_db)
 ):
-    # 이미 가입된 사용자인지 확인
+    # 1. 기존 사용자 여부 확인
     existing_user = db.query(User).filter(User.firebase_uid == uid).first()
     if existing_user:
-        raise HTTPException(status_code=400, detail="이미 가입된 사용자입니다.")
-
-    # birthdate 처리: 문자열 -> date 객체 변환
-    birth_date = datetime.datetime.strptime(data.birthDate, "%Y-%m-%d").date()
+        logger.warning(f"Registration rejected | actor_uid={uid} | reason=already_registered")
+        raise ConflictException("이미 가입된 사용자입니다.")
     
-    # birthHour / birthMinute 처리
-    if data.timeUnknown:
-        birth_time = None
-    else:
+    # 2. 데이터 가공
+    # birth_date 처리: 문자열 -> date 객체 변환
+    try:
+        birth_date = datetime.datetime.strptime(data.birth_date, "%Y-%m-%d").date()
+    except ValueError:
+        logger.warning(f"Registration rejected | actor_uid={uid} | reason=invalid_date_format | value={data.birth_date}")
+        raise BadRequestException("날짜 형식이 올바르지 않습니다. (YYYY-MM-DD)")
+    
+    # birth_time 처리
+    birth_time = None;
+    if not data.time_unknown:
         try:
-            hour = int(data.birthHour)
-            minute = int(data.birthMinute)
+            hour = int(data.birth_hour)
+            minute = int(data.birth_minute)
             if not (0 <= hour < 24) or not (0 <= minute < 60):
                 raise ValueError
             birth_time = datetime.time(hour=hour, minute=minute)
         except ValueError:
-            raise HTTPException(status_code=400, detail="출생시간이 올바르지 않습니다.")
+            logger.warning(
+                f"Registration rejected | actor_uid={uid} | reason=invalid_time_range | "
+                f"value={data.birth_hour}:{data.birth_minute}"
+            )
+            raise BadRequestException("출생 시간이 올바르지 않습니다. (HH:MM)")
 
-    # User 객체 생성
+    # 3. User 객체 생성 및 저장
     user = User(
         firebase_uid=uid,
         email=data.email,
@@ -69,23 +59,53 @@ async def register_user(
         gender=data.gender,
         birth_date=birth_date,
         birth_time=birth_time,
-        birth_calendar=data.birthCalendar
+        birth_calendar=data.birth_calendar
     )
     
-    db.add(user)
-    db.flush() # User의 Primary Key(ID) 미리 확보
-    
-    # 사주 계산 및 저장 함수 호출
     try:
+        db.add(user)
+        db.commit() # 먼저 커밋해 락을 해제하고 유저 확정
+        db.refresh(user)
+            
+        # 사주 계산 및 저장 작업 수행
         await calculate_saju_and_save(user=user, db=db)
     except Exception as e:
+        # 하나라도 실패하면 전체 취소 (트랜잭션 롤백)
         db.rollback()
-        print(f"Saju calculation failed for user {uid}: {e}") 
-        raise HTTPException(status_code=500, detail="회원가입 중 사주 데이터 계산/저장에 실패했습니다.")
+        logger.error(
+            f"Registration failed | email={data.email} | error={str(e)}",
+            exc_info=True
+        )
+        raise InternalServerErrorException("회원가입 처리 중 오류가 발생했습니다.")
+    
+    # 4. 보안 쿠키 설정
+    response.set_cookie(
+        key="session_uid",
+        value=uid,
+        max_age=3600,
+        httponly=True,
+        secure=False,
+        samesite="Lax"
+    )
+    
+    logger.info(f"User registered | actor_uid={uid} | nickname={user.nickname} | user_id={user.id}")
+    return user
 
-    db.commit()
-    db.refresh(user)
 
+# POST /auth/login - 로그인 API
+@router.post("/login", response_model=UserResponse, status_code=status.HTTP_200_OK)
+async def login(
+    response: Response,
+    uid: str = Depends(verify_firebase_token),
+    db: Session = Depends(get_db)
+):
+    # 1. DB에서 사용자 확인
+    user = db.query(User).filter(User.firebase_uid == uid).first()
+    if not user:
+        logger.warning(f"login rejected | actor_uid={uid} | reason=user_not_found")
+        raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
+    
+    # 2. 보안 쿠키 설정
     response.set_cookie(
         key="session_uid",
         value=uid,
@@ -95,93 +115,72 @@ async def register_user(
         samesite="Lax"
     )
 
-    db.commit()
-    db.refresh(user)
-    
-    return {"message": "회원가입 및 자동 로그인 성공", "uid": uid}
+    return user
 
 
-# 로그인 API
-@router.post("/login")
-def login(
+# POST /auth/guest - 게스트 회원가입 API
+@router.post("/guest", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def register_guest(
     response: Response,
+    data: GuestRegisterRequest,
     uid: str = Depends(verify_firebase_token),
     db: Session = Depends(get_db)
 ):
-    # DB에서 사용자 확인
+    # 1. 기존 사용자 여부 확인
     user = db.query(User).filter(User.firebase_uid == uid).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="등록되지 않은 사용자입니다.")
-
-    # 쿠키 발급
-    response.set_cookie(
-        key="session_uid",
-        value=uid,
-        max_age=3600,        # 1시간 유지
-        httponly=True,       # JS에서 접근 불가
-        secure=False,        # True=HTTPS 환경에서만 전송, 테스트라서 false
-        samesite="Lax"       # CSRF 기본 보호
-    )
-
-    return {"message": "로그인 성공", "uid": uid}
-
-
-# 게스트 로그인/가입 API
-@router.post("/guest-login")
-async def guest_login(
-    response: Response,
-    data: GuestLoginRequest,
-    background_tasks: BackgroundTasks,
-    uid: str = Depends(verify_firebase_token),
-    db: Session = Depends(get_db)
-):
-    # 이미 DB에 존재하는지 확인 (익명 사용자가 재접속 시)
-    user = db.query(User).filter(User.firebase_uid == uid).first()
-
-    # 신규 게스트라면 DB에 등록
-    if not user:
-        # birthdate 처리
-        birth_date = datetime.datetime.strptime(data.birthDate, "%Y-%m-%d").date()
+    if user:
+        logger.warning(f"Guest registration rejected | actor_uid={uid} | reason=already_registered")
+        raise ConflictException("이미 가입된 사용자입니다.")
         
-        # time 처리
-        if data.timeUnknown:
-            birth_time = None
-        else:
+    # 2. 신규 게스트인 경우 가입 처리
+    if not user:
+        # 1) 데이터 가공
+        try:
+            birth_date = datetime.datetime.strptime(data.birth_date, "%Y-%m-%d").date()
+        except ValueError:
+            logger.warning(f"Guest registration rejected | actor_uid={uid} | reason=invalid_date_format | value={data.birth_date}")
+            raise BadRequestException("날짜 형식이 올바르지 않습니다. (YYYY-MM-DD)")
+
+        birth_time = None
+        if not data.time_unknown:
             try:
-                hour = int(data.birthHour)
-                minute = int(data.birthMinute)
+                hour = int(data.birth_hour)
+                minute = int(data.birth_minute)
                 birth_time = datetime.time(hour=hour, minute=minute)
             except ValueError:
-                raise HTTPException(status_code=400, detail="출생시간이 올바르지 않습니다.")
+                logger.warning(
+                    f"Guest registration rejected | actor_uid={uid} | reason=invalid_time_range | "
+                    f"value={data.birth_hour}:{data.birth_minute}"
+                )
+                raise BadRequestException("출생 시간이 올바르지 않습니다. (HH:MM)")
         
-        # User 객체 생성 - 익명용 더미 이메일 생성
-        dummy_email = f"guest_{uid[:8]}@bapick.guest"
-        
-        user = User(
-            firebase_uid=uid,
-            email=dummy_email,
-            nickname=data.nickname,
-            gender=data.gender,
-            birth_date=birth_date,
-            birth_time=birth_time,
-            birth_calendar=data.birthCalendar,
-        )
-        
-        db.add(user)
-        db.commit()
-        db.refresh(user) 
-
-        # 사주 계산 로직 수행
+        # 2) 게스트 유저 생성 및 사주 계산
         try:
+            dummy_email = f"guest_{uid[:8]}@bapick.guest"
+            user = User(
+                firebase_uid=uid,
+                email=dummy_email,
+                nickname=data.nickname,
+                gender=data.gender,
+                birth_date=birth_date,
+                birth_time=birth_time,
+                birth_calendar=data.birth_calendar,
+            )
+            
+            db.add(user)
+            db.commit() # 먼저 커밋해 락을 해제하고 유저 확정
+            db.refresh(user)
+            
             await calculate_saju_and_save(user=user, db=db)
         except Exception as e:
-            print(f"Guest Saju calculation failed: {e}")
-            raise HTTPException(status_code=500, detail="게스트 정보 저장 실패")
+            db.rollback()
+            logger.error(
+                f"Guest registration failed | uid={uid} | nickname={data.nickname} | error={str(e)}",
+                exc_info=True
+            )
+            raise InternalServerErrorException("게스트 계정 생성 중 오류가 발생했습니다.")
 
-        db.commit()
-        db.refresh(user)
-
-    # 쿠키 발급 (로그인 처리)
+    # 3. 보안 쿠키 설정
     response.set_cookie(
         key="session_uid",
         value=uid,
@@ -191,4 +190,6 @@ async def guest_login(
         samesite="Lax"
     )
 
-    return {"message": "게스트 로그인 성공", "uid": uid}
+    logger.info(f"Guest registered | actor_uid={uid} | nickname={user.nickname} | user_id={user.id}")
+
+    return user

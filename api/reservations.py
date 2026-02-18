@@ -1,159 +1,143 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Body
-from sqlalchemy.orm import Session
-from typing import List
-from pydantic import BaseModel, Field
-from datetime import datetime, date, time
+import logging
+from fastapi import APIRouter, Depends, Query, status
+from sqlalchemy.orm import Session, joinedload
+from datetime import date
 from core.firebase_auth import verify_firebase_token
 from core.db import get_db
 from core.models import Reservation, Restaurant, User 
+from core.exceptions import NotFoundException, UnauthorizedException, InternalServerErrorException
+from core.schemas import ReservationRequest, ReservationResponse
 
 router = APIRouter(prefix="/reservations", tags=["reservations"])
-
-# 예약 요청을 위한 Pydantic 모델
-class ReservationCreate(BaseModel):
-    restaurant_id: int = Field(..., description="식당 ID") 
-    reservation_date: date = Field(..., description="예약 날짜 (YYYY-MM-DD)") 
-    reservation_time: time = Field(..., description="예약 시간 (HH:MM:SS)") 
-    # ⭐️ 변경: people_count를 Integer 타입으로 변경합니다.
-    people_count: int = Field(..., description="예약 인원 수")
-
-# 예약 응답을 위한 Pydantic 모델
-class ReservationDisplay(BaseModel):
-    id: int
-    restaurant_id: int
-    # ⭐️ 변경: user_id를 Integer 타입으로 변경합니다.
-    user_id: int
-    reservation_date: date # 👈 DB와 일치하는 date 타입
-    reservation_time: time
-    # ⭐️ 변경: people_count를 Integer 타입으로 변경합니다.
-    people_count: int
-    # ⭐️ 추가: created_at 필드를 DateTime 타입으로 추가합니다.
-    created_at: datetime 
-    
-    # 조회를 위해 식당 이름도 함께 반환
-    restaurant_name: str 
-    
-    class Config:
-        from_attributes = True
+logger = logging.getLogger(__name__)
 
 
-# 1. 예약 생성 API
-@router.post("/create", response_model=ReservationDisplay)
-def create_reservation(
-    reservation: ReservationCreate,
+# GET /api/reservations: 예약 조회
+@router.get("", response_model=list[ReservationResponse])
+def get_user_reservations(
+    target_date: date = Query(
+        None, 
+        description="조회 기준 날짜 (YYYY-MM-DD). 지정하지 않으면 전체 예약 반환"
+    ),
     db: Session = Depends(get_db),
     uid: str = Depends(verify_firebase_token)
 ):
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
-        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
+        logger.warning(f"Reservation Fetch failed | User not found | UID: {uid}")
+        raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
 
-    # 식당 ID 유효성 검사
+    try:
+        query = db.query(Reservation).options(joinedload(Reservation.restaurant)).filter(
+            Reservation.user_id == user.id
+        )
+        if target_date:
+            query = query.filter(Reservation.reservation_date == target_date)
+        
+        reservations = query.order_by(
+            Reservation.reservation_date.desc(), 
+            Reservation.reservation_time.desc()
+        ).all()
+        
+        return [ReservationResponse.from_orm_custom(res, res.restaurant.name) for res in reservations]
+    except Exception as e:
+        logger.error(
+            f"Reservation Fetch failed | Error retrieving reservations | User: {user.id} | Error: {e}", 
+            exc_info=True
+        )
+        raise InternalServerErrorException(message="예약 내역을 불러오는 중 오류가 발생했습니다.")
+    
+    
+# POST /api/reservations: 예약 생성
+@router.post("", response_model=ReservationResponse)
+def create_reservation(
+    reservation: ReservationRequest,
+    db: Session = Depends(get_db),
+    uid: str = Depends(verify_firebase_token)
+):
+    user = db.query(User).filter(User.firebase_uid == uid).first()
+    if not user:
+        logger.warning(f"Reservation Create failed | User not found | UID: {uid}")
+        raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
+
     restaurant = db.query(Restaurant).filter(Restaurant.id == reservation.restaurant_id).first()
     if not restaurant:
-        raise HTTPException(status_code=404, detail="Restaurant not found")
+        logger.warning(f"Reservation Create failed | Restaurant not found | ID: {reservation.restaurant_id} | User: {user.id}")
+        raise NotFoundException(resource="식당")
         
-    db_reservation = Reservation(
-        user_id= user.id,
-        restaurant_id=reservation.restaurant_id,
-        reservation_date=reservation.reservation_date, 
-        reservation_time=reservation.reservation_time,
-        people_count=reservation.people_count
-    )
-    
-    db.add(db_reservation)
-    db.commit()
-    db.refresh(db_reservation)
-
-    # 응답 모델 생성
-    return ReservationDisplay(
-        **db_reservation.__dict__,
-        restaurant_name=restaurant.name
-    )
-
-
-# 2. 내 예약 목록 조회 API
-# 2. 내 예약 목록 조회 API
-@router.get("/", response_model=List[ReservationDisplay])
-def get_user_reservations(
-    # ⭐️ 변경: 특정 날짜를 필터링하기 위한 선택적 쿼리 파라미터 추가
-    target_date: date = Query(None, description="조회할 특정 예약 날짜 (YYYY-MM-DD, 선택 사항)"),
-    db: Session = Depends(get_db),
-    uid: str = Depends(verify_firebase_token)
-):
-    """현재 사용자의 모든 예약 목록을 조회합니다. target_date를 제공하면 해당 날짜의 예약만 조회합니다."""
-    
-    # DB user_id를 가져옵니다.
-    user = db.query(User).filter(User.firebase_uid == uid).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
-
-    # 기본 쿼리 설정
-    query = db.query(Reservation, Restaurant.name).join(
-        Restaurant, Reservation.restaurant_id == Restaurant.id
-    ).filter(
-        Reservation.user_id == user.id # DB user_id로 필터링
-    )
-
-    # ⭐️ 추가: target_date가 제공된 경우 필터링 조건 추가
-    if target_date:
-        query = query.filter(Reservation.reservation_date == target_date)
-    
-    # 정렬 및 결과 조회
-    reservations_with_name = query.order_by(
-        Reservation.reservation_date.desc(), 
-        Reservation.reservation_time.desc()
-    ).all() # 최신순 정렬
-
-    results = []
-    for reservation, restaurant_name in reservations_with_name:
-        results.append(ReservationDisplay(
-            **reservation.__dict__,
-            restaurant_name=restaurant_name
-        ))
+    try:
+        new_reservation = Reservation(
+            user_id=user.id,
+            restaurant_id=reservation.restaurant_id,
+            reservation_date=reservation.reservation_date, 
+            reservation_time=reservation.reservation_time,
+            people_count=reservation.people_count
+        )
+        db.add(new_reservation)
+        db.commit()
+        db.refresh(new_reservation)
         
-    return results
+        logger.info(
+            f"Reservation Created | ID: {new_reservation.id} | User: {user.id} | Restaurant: {restaurant.id} | Date: {reservation.reservation_date}"
+        )
+        return ReservationResponse.from_orm_custom(new_reservation, restaurant.name)
+    except Exception as e:
+        db.rollback()
+        logger.error(
+            f"Reservation Create failed | Error creating reservation | User: {user.id} | Error: {e}", 
+            exc_info=True
+        )
+        raise InternalServerErrorException(message="예약 등록 중 오류가 발생했습니다.")
 
-# 3. 예약 수정 API
-@router.put("/{reservation_id}", response_model=ReservationDisplay)
+
+# PUT /api/reservations/{reservation_id}: 예약 수정 
+@router.put("/{reservation_id}", response_model=ReservationResponse)
 def update_reservation(
     reservation_id: int,
-    reservation_update: ReservationCreate,
+    reservation_update: ReservationRequest,
     uid: str = Depends(verify_firebase_token),
     db: Session = Depends(get_db)
 ):
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
-        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")    
+        logger.warning(f"Reservation Update failed | User not found | UID: {uid}")
+        raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
     
-    db_reservation = db.query(Reservation).filter(
+    reservation = db.query(Reservation).filter(
         Reservation.id == reservation_id,
-        Reservation.user_id == user.id # DB user_id로 소유권 확인
+        Reservation.user_id == user.id
     ).first()
 
-    if not db_reservation:
-        raise HTTPException(status_code=404, detail="Reservation not found or not owned by user")
-    
-    # 식당 ID 유효성 검사
+    if not reservation:
+        logger.warning(f"Reservation Update failed | Reservation not found | Res_ID: {reservation_id} | User: {user.id}")
+        raise NotFoundException(resource="예약")
+
     restaurant = db.query(Restaurant).filter(Restaurant.id == reservation_update.restaurant_id).first()
     if not restaurant:
-        raise HTTPException(status_code=404, detail="Restaurant not found")
-    
-    db_reservation.restaurant_id = reservation_update.restaurant_id
-    db_reservation.reservation_date = reservation_update.reservation_date
-    db_reservation.reservation_time = reservation_update.reservation_time
-    db_reservation.people_count = reservation_update.people_count 
-    
-    db.commit()
-    db.refresh(db_reservation)
-    
-    return ReservationDisplay(
-        **db_reservation.__dict__,
-        restaurant_name=restaurant.name
-    )
+        logger.warning(f"Reservation Update failed | Restaurant not found | Rest_ID: {reservation_update.restaurant_id} | User: {user.id}")
+        raise NotFoundException(resource="식당")
 
-# 4. 예약 삭제 API
-@router.delete("/{reservation_id}", status_code=204)
+    try:
+        reservation.reservation_date = reservation_update.reservation_date
+        reservation.reservation_time = reservation_update.reservation_time
+        reservation.people_count = reservation_update.people_count 
+        
+        db.commit()
+        db.refresh(reservation)
+        
+        logger.info(f"Reservation Updated | ID: {reservation_id} | User: {user.id} | Rest_ID: {restaurant.id}")
+        return ReservationResponse.from_orm_custom(reservation, reservation.restaurant.name)
+    except Exception as e:
+        db.rollback()
+        logger.error(
+            f"Reservation Update failed | Error updating reservation | ID: {reservation_id} | User: {user.id} | Error: {e}", 
+            exc_info=True
+        )
+        raise InternalServerErrorException(message="예약 수정 중 오류가 발생했습니다.")
+
+
+# DELETE /api/reservations/{reservation_id}: 예약 삭제
+@router.delete("/{reservation_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_reservation(
     reservation_id: int,
     uid: str = Depends(verify_firebase_token),
@@ -161,19 +145,27 @@ def delete_reservation(
 ):
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
-        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")    
+        logger.warning(f"Reservation Delete failed | User not found | UID: {uid}")
+        raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
     
-    
-    #db_user_id = get_db_user_id(firebase_uid, db)
-    
-    db_reservation = db.query(Reservation).filter(
+    reservation = db.query(Reservation).filter(
         Reservation.id == reservation_id,
-        Reservation.user_id ==user.id # DB user_id로 소유권 확인
+        Reservation.user_id == user.id
     ).first()
     
-    if not db_reservation:
-        raise HTTPException(status_code=404, detail="Reservation not found or not owned by user")
+    if not reservation:
+        logger.warning(f"Reservation Delete failed | Reservation not found | ID: {reservation_id} | User: {user.id}")
+        raise NotFoundException(resource="예약")
     
-    db.delete(db_reservation)
-    db.commit()
-    return {"ok": True}
+    try:
+        db.delete(reservation)
+        db.commit()
+        logger.info(f"Reservation Deleted | ID: {reservation_id} | User: {user.id}")
+        return
+    except Exception as e:
+        db.rollback()
+        logger.error(
+            f"Reservation Delete failed | Error deleting reservation | ID: {reservation_id} | User: {user.id} | Error: {e}",
+            exc_info=True
+        )
+        raise InternalServerErrorException(message="예약 삭제 중 오류가 발생했습니다.")
