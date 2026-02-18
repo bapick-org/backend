@@ -125,7 +125,10 @@ def process_location_selection_tag(
 
     selected_menu = get_latest_selected_menu(db, chatroom.id)
 
-    print(f"[DEBUG] LOCATION_SELECTED 처리: action={action_type}, menu={selected_menu}, lat={lat}, lon={lon}")
+    logger.info(
+        f"Location selected | room_id={chatroom.id} | action={action_type} | "
+        f"menu={selected_menu} | lat={lat} | lon={lon}"
+    )
 
     # 식당 검색
     restaurant_data = search_and_recommend_restaurants(selected_menu, db, lat, lon)
@@ -170,7 +173,10 @@ def process_location_selection_tag(
         }
 
     # 검색 결과 있음
-    print(f"[DEBUG] 식당 검색 성공: {len(restaurants)}개 발견")
+    logger.info(
+        f"Restaurant search success | room_id={chatroom.id} | menu={selected_menu} | "
+        f"count={len(restaurants)} | lat={lat} | lon={lon}"
+    )
 
     chatroom.selected_menu = None
     db.add(chatroom)
@@ -401,10 +407,10 @@ async def handle_websocket_message(
 
         conversation_history = build_conversation_history(db, room_id)
 
-        print("\n============================")
-        print("📩 USER MESSAGE:", user_message_for_llm)
-        print("📜 HISTORY:", conversation_history)
-        print("============================\n")
+        logger.info(
+            f"LLM request | room_id={room_id} | uid={uid} | "
+            f"message={user_message_for_llm[:50]}... | history_length={len(conversation_history)}"
+        )
 
         try:
             # 오행 정보 로딩
@@ -426,10 +432,16 @@ async def handle_websocket_message(
                 oheng_info_text=oheng_info_text,
             )
 
-            print("🤖 LLM OUTPUT:", llm_output)
+            logger.info(
+                f"LLM response | room_id={room_id} | uid={uid} | "
+                f"output_length={len(llm_output)} | output_preview={llm_output[:100]}..."
+            )
 
         except Exception as llm_error:
-            print("💥 LLM 호출 오류:", llm_error)
+            logger.error(
+                f"LLM call failed | room_id={room_id} | uid={uid} | error={str(llm_error)}",
+                exc_info=True
+            )
             await manager.broadcast(
                 room_id,
                 json.dumps(
@@ -438,7 +450,7 @@ async def handle_websocket_message(
                         "message": {
                             "role": "assistant",
                             "sender_name": "밥풀이",
-                            "content": "잠깐 오류났어 😅 다시 한번 말해줄래?",
+                            "content": "잠깐 오류났어... 다시 한번 말해줄래?",
                             "message_type": "text",
                         },
                     }
@@ -492,13 +504,16 @@ async def handle_websocket_message(
         db.commit()
 
     except Exception as e:
-        print("🔥 전체 처리 오류:", e)
+        logger.error(
+            f"WebSocket message handling failed | room_id={room_id} | uid={uid} | error={str(e)}",
+            exc_info=True
+        )
         await manager.broadcast(
             room_id,
             json.dumps(
                 {
                     "type": "error",
-                    "message": "서버에서 오류가 발생했어 😭 다시 시도해줘!",
+                    "message": "서버에서 오류가 발생했어 다시 시도해줘!",
                 }
             ),
         )
@@ -1033,10 +1048,10 @@ async def send_message(
         # 3) 기존 대화 내역 + 오행 정보
         conversation_history = build_conversation_history(db, chatroom.id)
 
-        print("\n============================")
-        print("📩 USER MESSAGE:", user_message_for_llm)
-        print("📜 HISTORY:", conversation_history)
-        print("============================\n")
+        logger.info(
+            f"LLM request (HTTP) | room_id={room_id} | uid={uid} | "
+            f"message={user_message_for_llm[:50]}... | history_length={len(conversation_history)}"
+        )
 
         data = await get_today_saju_analysis(uid, db)
     

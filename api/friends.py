@@ -248,7 +248,7 @@ def create_friend_request(
         # Location 헤더 추가 
         response.headers["Location"] = f"/friend-requests/{new_request.id}"
         
-        logger.info(f"Friend request sent | ID: {new_request.id} | actor_id: {user_id} | target_id: {receiver_id}")
+        logger.info(f"Friend request sent | actor_id: {user_id} | target_id: {receiver_id} | friendship_id: {new_request.id} ")
         
         return FriendRequestResponse(
             id=new_request.id,
@@ -319,21 +319,31 @@ def handle_friend_request(
         if request.action == "accept":
             friendship.status = "accepted"
             logger.info(
-                f"Friend request accepted | friendship_id={friendship_id} | "
+                f"Friend request handle accepted | friendship_id={friendship_id} | "
                 f"requester_id={friendship.requester_id} | receiver_id={user_id}"
             )
         elif request.action == "reject":
             friendship.status = "rejected"
             logger.info(
-                f"Friend request rejected | friendship_id={friendship_id} | "
+                f"Friend request handle rejected | friendship_id={friendship_id} | "
                 f"requester_id={friendship.requester_id} | receiver_id={user_id}"
             )
         else:
             # Pydantic validation에서 걸러지지만 방어 코드
+            logger.warning(
+                f"Friend request handle rejected | actor_id={user_id} | "
+                f"friendship_id={friendship_id} | invalid_action={request.action}"
+            )
             raise BadRequestException("유효하지 않은 action입니다. 'accept' 또는 'reject'만 가능합니다.")
 
         db.commit()
         db.refresh(friendship)
+        
+        logger.info(
+            f"Friend request processed | actor_id={user_id}  | friendship_id={friendship_id} "
+            f"action={request.action} | receiver_id={friendship.requester_id} | "
+            f"friendship_id={friendship_id}"
+        )
         
         return FriendRequestResponse(
             id=friendship.id,

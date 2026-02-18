@@ -1,7 +1,7 @@
+import datetime
+import logging
 from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.orm import Session
-import datetime
-
 from core.firebase_auth import verify_firebase_token
 from core.db import get_db
 from core.models import User
@@ -9,6 +9,7 @@ from core.schemas import RegisterRequest, GuestRegisterRequest, UserResponse
 from core.exceptions import BadRequestException, ConflictException, UnauthorizedException, InternalServerErrorException
 from saju.saju_service import calculate_saju_and_save
 
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -23,6 +24,7 @@ async def register(
     # 1. 기존 사용자 여부 확인
     existing_user = db.query(User).filter(User.firebase_uid == uid).first()
     if existing_user:
+        logger.warning(f"Registration rejected | actor_uid={uid} | reason=already_registered")
         raise ConflictException("이미 가입된 사용자입니다.")
     
     # 2. 데이터 가공
@@ -30,6 +32,7 @@ async def register(
     try:
         birth_date = datetime.datetime.strptime(data.birth_date, "%Y-%m-%d").date()
     except ValueError:
+        logger.warning(f"Registration rejected | actor_uid={uid} | reason=invalid_date_format | value={data.birth_date}")
         raise BadRequestException("날짜 형식이 올바르지 않습니다. (YYYY-MM-DD)")
     
     # birth_time 처리
@@ -42,6 +45,10 @@ async def register(
                 raise ValueError
             birth_time = datetime.time(hour=hour, minute=minute)
         except ValueError:
+            logger.warning(
+                f"Registration rejected | actor_uid={uid} | reason=invalid_time_range | "
+                f"value={data.birth_hour}:{data.birth_minute}"
+            )
             raise BadRequestException("출생 시간이 올바르지 않습니다. (HH:MM)")
 
     # 3. User 객체 생성 및 저장
@@ -65,7 +72,10 @@ async def register(
     except Exception as e:
         # 하나라도 실패하면 전체 취소 (트랜잭션 롤백)
         db.rollback()
-        print(f"Signup Error: {e}")
+        logger.error(
+            f"Registration failed | email={data.email} | error={str(e)}",
+            exc_info=True
+        )
         raise InternalServerErrorException("회원가입 처리 중 오류가 발생했습니다.")
     
     # 4. 보안 쿠키 설정
@@ -78,6 +88,7 @@ async def register(
         samesite="Lax"
     )
     
+    logger.info(f"User registered | actor_uid={uid} | nickname={user.nickname} | user_id={user.id}")
     return user
 
 
@@ -91,6 +102,7 @@ async def login(
     # 1. DB에서 사용자 확인
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
+        logger.warning(f"login rejected | actor_uid={uid} | reason=user_not_found")
         raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
     
     # 2. 보안 쿠키 설정
@@ -116,13 +128,17 @@ async def register_guest(
 ):
     # 1. 기존 사용자 여부 확인
     user = db.query(User).filter(User.firebase_uid == uid).first()
-
+    if user:
+        logger.warning(f"Guest registration rejected | actor_uid={uid} | reason=already_registered")
+        raise ConflictException("이미 가입된 사용자입니다.")
+        
     # 2. 신규 게스트인 경우 가입 처리
     if not user:
         # 1) 데이터 가공
         try:
             birth_date = datetime.datetime.strptime(data.birth_date, "%Y-%m-%d").date()
         except ValueError:
+            logger.warning(f"Guest registration rejected | actor_uid={uid} | reason=invalid_date_format | value={data.birth_date}")
             raise BadRequestException("날짜 형식이 올바르지 않습니다. (YYYY-MM-DD)")
 
         birth_time = None
@@ -132,6 +148,10 @@ async def register_guest(
                 minute = int(data.birth_minute)
                 birth_time = datetime.time(hour=hour, minute=minute)
             except ValueError:
+                logger.warning(
+                    f"Guest registration rejected | actor_uid={uid} | reason=invalid_time_range | "
+                    f"value={data.birth_hour}:{data.birth_minute}"
+                )
                 raise BadRequestException("출생 시간이 올바르지 않습니다. (HH:MM)")
         
         # 2) 게스트 유저 생성 및 사주 계산
@@ -154,7 +174,10 @@ async def register_guest(
             await calculate_saju_and_save(user=user, db=db)
         except Exception as e:
             db.rollback()
-            print(f"Guest Signup failed: {e}")
+            logger.error(
+                f"Guest registration failed | uid={uid} | nickname={data.nickname} | error={str(e)}",
+                exc_info=True
+            )
             raise InternalServerErrorException("게스트 계정 생성 중 오류가 발생했습니다.")
 
     # 3. 보안 쿠키 설정
@@ -166,5 +189,7 @@ async def register_guest(
         secure=False,
         samesite="Lax"
     )
+
+    logger.info(f"Guest registered | actor_uid={uid} | nickname={user.nickname} | user_id={user.id}")
 
     return user

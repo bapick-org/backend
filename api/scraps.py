@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -8,20 +9,19 @@ from core.models import User, Scrap, Collection
 from core.exceptions import NotFoundException, ConflictException, UnauthorizedException
 from core.schemas import CollectionCreateRequest, CollectionResponse, CollectionScrapListResponse, ScrapItemResponse, ScrapCreateRequest, ScrapCreateResponse, ScrapStatusResponse
 
-router = APIRouter()
-
-scrapRouter = APIRouter(prefix="/scraps", tags=["scraps"])
-collectionRouter = APIRouter(prefix="/collections", tags=["collections"])
-
+logger = logging.getLogger(__name__)
+scrap_router = APIRouter(prefix="/scraps", tags=["scraps"])
+collection_router = APIRouter(prefix="/collections", tags=["collections"])
 
 # GET /api/collections: 전체 컬렉션 목록 조회 - 각 컬렉션 정보와 대표 이미지 포함
-@collectionRouter.get("", response_model=list[CollectionResponse])
+@collection_router.get("", response_model=list[CollectionResponse])
 def get_my_collections(
     db: Session = Depends(get_db),
     uid: str = Depends(verify_firebase_token)
 ):
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
+        logger.warning(f"Collections fetch rejected | actor_uid={uid} | reason=user_not_found")
         raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
     
     response_list = []
@@ -64,7 +64,7 @@ def get_my_collections(
 
 
 # POST /api/collections: 컬렉션 생성
-@collectionRouter.post("", response_model=CollectionResponse, status_code=status.HTTP_201_CREATED)
+@collection_router.post("", response_model=CollectionResponse, status_code=status.HTTP_201_CREATED)
 def create_user_collection(
     collection_data: CollectionCreateRequest,
     db: Session = Depends(get_db),
@@ -72,6 +72,7 @@ def create_user_collection(
 ):
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
+        logger.warning(f"Collection create rejected | actor_uid={uid} | reason=user_not_found")
         raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
 
     existing_collection = db.query(Collection).filter(
@@ -79,6 +80,10 @@ def create_user_collection(
         Collection.name == collection_data.name
     ).first()
     if existing_collection:
+        logger.warning(
+            f"Collection create rejected | actor_id={user.id} | "
+            f"collection_name={collection_data.name} | reason=already_exists"
+        )
         raise ConflictException(message="동일한 이름의 컬렉션이 이미 존재합니다.")
 
     new_collection = Collection(
@@ -91,11 +96,16 @@ def create_user_collection(
     db.commit()
     db.refresh(new_collection)
 
+    logger.info(
+        f"Collection created | actor_id={user.id} | "
+        f"collection_id={new_collection.id} | name={new_collection.name}"
+    )
+
     return CollectionResponse.from_orm_custom(new_collection, None)
 
 
 # DELETE /api/collections/{id}: 특정 컬렉션 삭제
-@collectionRouter.delete("/{collection_id}", status_code=status.HTTP_204_NO_CONTENT)
+@collection_router.delete("/{collection_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_user_collection(
     collection_id: int,
     db: Session = Depends(get_db),
@@ -103,6 +113,7 @@ def delete_user_collection(
 ):
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
+        logger.warning(f"Collection delete rejected | actor_uid={uid} | reason=user_not_found")
         raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
 
     collection = db.query(Collection).filter(
@@ -111,6 +122,10 @@ def delete_user_collection(
     ).first()
 
     if not collection:
+        logger.warning(
+            f"Collection delete rejected | actor_id={user.id} | collection_id={collection_id} | "
+            f"reason=collection_not_found"
+        )
         raise NotFoundException(resource="컬렉션")
 
     # 컬렉션 내부 스크랩 처리 (참조 무결성 유지): 스크랩은 남아야 하므로 collection_id를 NULL로 업데이트
@@ -123,11 +138,16 @@ def delete_user_collection(
     db.delete(collection)
     db.commit()
 
+    logger.info(
+        f"Collection deleted | actor_id={user.id} | "
+        f"collection_id={collection.id} | name={collection.name}"
+    )
+    
     return
 
 
 # GET /api/collections/{id}/scraps: 특정 컬렉션 내 스크랩 목록 조회
-@collectionRouter.get("/{collection_id}/scraps", response_model=CollectionScrapListResponse)
+@collection_router.get("/{collection_id}/scraps", response_model=CollectionScrapListResponse)
 def get_scraps_in_collection(
     collection_id: int,
     db: Session = Depends(get_db),
@@ -135,6 +155,7 @@ def get_scraps_in_collection(
 ):
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
+        logger.warning(f"Collection scraps fetch rejected | actor_uid={uid} | reason=user_not_found")
         raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
 
     # 1. 컬렉션 존재 여부 및 이름 확인
@@ -144,6 +165,10 @@ def get_scraps_in_collection(
     ).first()
 
     if not collection:
+        logger.warning(
+            f"Collection scraps fetch rejected | actor_id={user.id} | collection_id={collection_id} | "
+            f"reason=collection_not_found"
+        )
         raise NotFoundException(resource="컬렉션")
 
     # 2. 해당 컬렉션의 스크랩 목록 조회
@@ -173,13 +198,14 @@ def get_scraps_in_collection(
 
 
 # GET /api/scraps: 전체 스크랩 목록 조회
-@scrapRouter.get("", response_model=list[ScrapItemResponse])
+@scrap_router.get("", response_model=list[ScrapItemResponse])
 def get_my_scraps(
     db: Session = Depends(get_db),
     uid: str = Depends(verify_firebase_token)
 ):
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
+        logger.warning(f"Scraps fetch rejected | actor_uid={uid} | reason=user_not_found")
         raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
 
     # 스크랩 확인: joinedload를 통해 restaurant 정보를 미리 가져옴
@@ -194,7 +220,7 @@ def get_my_scraps(
 
 
 # POST /api/scraps/restaurants/{id}: 식당 스크랩 생성
-@scrapRouter.post("/restaurants/{restaurant_id}", response_model=ScrapCreateResponse, status_code=status.HTTP_201_CREATED)
+@scrap_router.post("/restaurants/{restaurant_id}", response_model=ScrapCreateResponse, status_code=status.HTTP_201_CREATED)
 def create_scrap(
     scrap_data: ScrapCreateRequest,
     db: Session = Depends(get_db),
@@ -202,6 +228,7 @@ def create_scrap(
 ):    
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
+        logger.warning(f"Scrap create rejected | actor_uid={uid} | reason=user_not_found")
         raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
 
     existing_scrap = db.query(Scrap).filter(
@@ -210,6 +237,10 @@ def create_scrap(
     ).first()
 
     if existing_scrap:
+        logger.warning(
+            f"Scrap create rejected | actor_id={user.id} | restaurant_id={scrap_data.restaurant_id} | "
+            f"current_collection_id={existing_scrap.collection_id} | reason=already_scrapped"
+        )
         raise ConflictException(message="이미 스크랩된 식당입니다.")
 
     new_scrap = Scrap(
@@ -223,6 +254,12 @@ def create_scrap(
     db.commit()
     db.refresh(new_scrap)
 
+    logger.info(
+        f"Scrap created | actor_id={user.id} | "
+        f"restaurant_id={new_scrap.restaurant_id} | "
+        f"collection_id={new_scrap.collection_id}"
+    )
+
     return ScrapCreateResponse(
         user_id=new_scrap.user_id,
         restaurant_id=new_scrap.restaurant_id,
@@ -232,7 +269,7 @@ def create_scrap(
 
 
 # GET /api/scraps/restaurants/{id}: 식당 스크랩 상태 확인
-@scrapRouter.get("/restaurants/{restaurant_id}", response_model=ScrapStatusResponse)
+@scrap_router.get("/restaurants/{restaurant_id}", response_model=ScrapStatusResponse)
 def get_scrap_status(
     restaurant_id: int,
     db: Session = Depends(get_db),
@@ -240,6 +277,7 @@ def get_scrap_status(
 ):
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
+        logger.warning(f"Scrap fetch rejected | actor_uid={uid} | reason=user_not_found")
         raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
 
     scrap = db.query(Scrap).filter(
@@ -251,7 +289,7 @@ def get_scrap_status(
 
 
 # DELETE /api/scraps/restaurants/{id}: 식당 스크랩 삭제
-@scrapRouter.delete("/restaurants/{restaurant_id}", status_code=status.HTTP_204_NO_CONTENT)
+@scrap_router.delete("/restaurants/{restaurant_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_scrap(
     restaurant_id: int,
     db: Session = Depends(get_db),
@@ -259,6 +297,7 @@ def delete_scrap(
 ):
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
+        logger.warning(f"Scrap delete rejected | actor_uid={uid} | reason=user_not_found")
         raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
 
     scrap = db.query(Scrap).filter(
@@ -266,14 +305,18 @@ def delete_scrap(
         Scrap.restaurant_id == restaurant_id
     ).first()
     if not scrap:
+        logger.warning(
+            f"Scrap delete rejected | actor_id={user.id} | "
+            f"restaurant_id={restaurant_id} | reason=not_found"
+        )
         raise NotFoundException(resource="스크랩 정보")
 
     db.delete(scrap)
     db.commit()
     
+    logger.info(
+        f"Scrap deleted | actor_id={user.id} | "
+        f"restaurant_id={restaurant_id} | scrap_id={scrap.id}"
+    )
+    
     return
-
-
-
-router.include_router(scrapRouter)
-router.include_router(collectionRouter)

@@ -14,7 +14,8 @@ from firebase_admin import credentials
 from core.exceptions import AppException
 from core.schemas import ErrorResponse
 from core.s3 import initialize_s3_client
-from api import auth, users, chat, saju, restaurants, scraps, reservations
+from api import auth, users, chat, saju, restaurants, reservations
+from api.scraps import scrap_router, collection_router
 from api.friends import friends_router, friend_requests_router
 from vectordb.vectordb_util import get_embeddings, get_chroma_client
 
@@ -149,7 +150,8 @@ app.include_router(users.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
 app.include_router(saju.router, prefix="/api")
 app.include_router(restaurants.router, prefix="/api")
-app.include_router(scraps.router, prefix="/api")
+app.include_router(scrap_router, prefix="/api")
+app.include_router(collection_router, prefix="/api")
 app.include_router(friends_router, prefix="/api")
 app.include_router(friend_requests_router, prefix="/api")
 app.include_router(reservations.router, prefix="/api")

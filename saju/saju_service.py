@@ -1,4 +1,5 @@
 import random
+import logging
 from sqlalchemy.orm import Session
 from datetime import date, time, timedelta, datetime
 from typing import Dict, List, Optional, Tuple
@@ -9,6 +10,8 @@ from starlette.concurrency import run_in_threadpool
 from core.models import User, Manse 
 from core.exceptions import BadRequestException, NotFoundException, InternalServerErrorException
 from saju.saju_data import get_time_ju_data, get_time_ju_data2, get_ten_star, get_jijangan, get_five_circle_from_char
+
+logger = logging.getLogger(__name__)
 
 
 OHENG_KOREAN_KEYS = ["목(木)", "화(火)", "토(土)", "금(金)", "수(水)"]
@@ -257,7 +260,9 @@ async def calculate_saju_and_save(
 
     # --- 3. 오행 비율 계산 ---
     oheng_percentages = calculate_oheng_score(saju_pillars)
-    print(f"DEBUG: 계산된 오행 비율 -> {oheng_percentages}")
+    logger.debug(
+        f"Oheng calculation | uid={user.firebase_uid} | scores={oheng_percentages}"
+    )
 
     # --- 4. 오행 비율을 DB에 저장 ---
     for kor_key, db_col in KOREAN_TO_DB_MAP.items():

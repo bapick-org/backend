@@ -6,7 +6,7 @@ from datetime import date, time
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 from typing import Optional
-
+import logging
 from core.firebase_auth import verify_firebase_token
 from core.db import get_db
 from core.models import User, Friendships
@@ -16,6 +16,7 @@ from core.exceptions import BadRequestException, UnauthorizedException, Internal
 from saju.saju_service import calculate_saju_and_save
 from services.user_cache_service import UserCacheService
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/users", tags=["users"])
 
 # GET /users/me 쿼리 파라미터의 snake_case 매핑 및 요청 필드 식별용 스키마
@@ -62,6 +63,7 @@ def search_users(
 
     me = db.query(User).filter(User.firebase_uid == uid).first()
     if not me:
+        logger.warning(f"Users searched rejected | actor_uid={uid} | reason=user_not_found")
         raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
 
     FriendshipAlias = aliased(Friendships)
@@ -115,6 +117,8 @@ def search_users(
             )
         )
 
+    logger.info(f"Users searched | actor_id={me.id} | keyword='{keyword}' | count={len(results)}")
+
     return UserSearchResponse(
         data=response_data,
         count=len(response_data),
@@ -139,6 +143,7 @@ async def get_my_info(
     if not user_dict:
         user = db.query(User).filter(User.firebase_uid == uid).first()
         if not user:
+            logger.warning(f"User fetch rejected | actor_uid={uid} | reason=user_not_found")
             raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
         
         # UserInfoResponse에 정의된 필드만 추출 (Pydantic을 활용한 DB 객체 직렬화)
@@ -162,6 +167,7 @@ async def generate_presigned_url(
     
     ext = content_type.split('/')[-1]
     if ext not in ['jpg', 'jpeg', 'png', 'webp']:
+        logger.warning(f"Presigned URL generation rejected | actor_uid={uid} | reason=invalid_file_format | ext={ext}")
         raise BadRequestException("허용되지 않는 파일 형식입니다. (jpg, jpeg, png, webp만 가능합니다.)")
     
     s3_key = f"profile_images/{uid}_{file_name}"
@@ -176,8 +182,13 @@ async def generate_presigned_url(
             ExpiresIn=3600
         )
     except ClientError as e:
-        print(f"[S3 Presigned URL 생성 중 오류]: {e}")
+        logger.error(
+            f"S3 presigned URL generation failed | actor_uid={uid} | file={file_name} | error={str(e)}",
+            exc_info=True
+        )
         raise InternalServerErrorException("이미지 서버 연결에 실패했습니다. 다시 시도해 주세요.")
+
+    logger.info(f"Presigned URL generated | actor_uid={uid} | content_type={content_type} | s3_key={s3_key}")
 
     return PresignedUrlResponse(presigned_url=presigned_url, s3_key=s3_key)
     
@@ -192,6 +203,7 @@ async def patch_my_info(
     cache_service = UserCacheService()
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
+        logger.warning(f"User profile update rejected | actor_uid={uid} | reason=user_not_found")
         raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
 
     is_saju_data_changed = False
@@ -229,14 +241,17 @@ async def patch_my_info(
             is_saju_data_changed = True
 
     except ValueError:
+        logger.warning(f"User profile update rejected | actor_id={user.id} | reason=invalid_date_format | value={data.birth_date}")
         raise BadRequestException("날짜 또는 시간 형식이 올바르지 않습니다.")
 
     # 3. 변경 사항이 있을 때만 사주 재계산
     if is_saju_data_changed:
+        logger.info(f"Saju recalculation triggered | actor_id={user.id} | reason=profile_update")
         await calculate_saju_and_save(user, db)
 
     db.commit()
     db.refresh(user)
     cache_service.invalidate_user_profile(uid) # 캐시 무효화
     
+    logger.info(f"User profile updated | actor_id={user.id}")
     return user
