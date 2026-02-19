@@ -10,8 +10,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from firebase_admin import credentials
-
-from core.exceptions import AppException
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from core.exceptions import *
 from core.schemas import ErrorResponse
 from core.s3 import initialize_s3_client
 from api import auth, users, chat, saju, restaurants, reservations
@@ -45,11 +45,13 @@ app = FastAPI(
 )
 
 # --- 에러 핸들러 ---
-# 1. 커스텀 예외 핸들러 (Conflict, NotFound 등)
+# 1. 커스텀 예외 핸들러 (AppException 및 그 자식들: NotFound, BadRequest 등)
 @app.exception_handler(AppException)
 async def app_exception_handler(request: Request, exc: AppException):
-    error_content = ErrorResponse(code=exc.code, message=exc.message).model_dump()
-    return JSONResponse(status_code=exc.status_code, content=error_content)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ErrorResponse(code=exc.code, message=exc.message).model_dump()
+    )
 
 # 2. Pydantic 검증 에러 핸들러 (422 -> 400 변환)
 @app.exception_handler(RequestValidationError)
@@ -59,14 +61,51 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     field = first_error.get("loc")[-1]
     msg = first_error.get("msg")
     
-    # ErrorResponse 스키마를 사용하여 응답 생성
     error_content = ErrorResponse(
         code="VALIDATION_ERROR",
         message=f"입력값이 올바르지 않습니다: {field} ({msg})"
     ).model_dump()
 
     return JSONResponse(status_code=400, content=error_content)
+
+# 3. FastAPI/Starlette 기본 예외 핸들러 (URL 오타, 인증 만료 등)
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    if exc.status_code == 404:
+        app_exc = NotFoundException(resource="페이지")
+    elif exc.status_code == 401:
+        app_exc = UnauthorizedException()
+    elif exc.status_code == 403:
+        app_exc = ForbiddenException()
+    else:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=ErrorResponse(
+                code=f"HTTP_{exc.status_code}",
+                message=exc.detail
+            ).model_dump()
+        )
+
+    return JSONResponse(
+        status_code=app_exc.status_code,
+        content=ErrorResponse(code=app_exc.code, message=app_exc.message).model_dump()
+    )
+
+# 4. 그 외 정의되지 않은 모든 서버 에러(500) 처리
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled Error: {exc}", exc_info=True)
     
+    app_exc = InternalServerErrorException()
+    
+    return JSONResponse(
+        status_code=app_exc.status_code,
+        content=ErrorResponse(
+            code=app_exc.code, 
+            message=app_exc.message
+        ).model_dump()
+    )
+
 # 파이어베이스 초기화
 def initialize_firebase_sync():
     LOCAL_KEY_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
