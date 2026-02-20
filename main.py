@@ -163,25 +163,44 @@ async def startup_event():
         logger.critical(f"Server Startup failed | Error: {e}", exc_info=True)
         raise
 
+# 환경 변수
+ENV = os.getenv("ENV", "development")
+
 # CORS 설정
 origins = [
     "http://127.0.0.1:5500",
     "http://127.0.0.1:5501",
-    "https://bab-front-gamma.vercel.app",
-    "https://bapick-app.vercel.app",
-    "https://bapick.duckdns.org",
-    "https://bapick.kr",
-    "https://www.bapick.kr"
+    "http://localhost:3000",
 ]
+
+# 프로덕션 도메인은 환경에 따라 추가
+if ENV == "production":
+    origins.extend([
+        "https://bab-front-gamma.vercel.app",
+        "https://bapick-app.vercel.app",
+        "https://bapick.duckdns.org",
+        "https://bapick.kr",
+        "https://www.bapick.kr"
+    ])
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["Location"]
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=[
+        "Content-Type",
+        "Authorization",
+        "Accept",
+        "Origin",
+        "User-Agent",
+        "Cache-Control",
+        "X-Requested-With",
+    ],
+    expose_headers=["Location"],
+    max_age=600,  # Preflight 요청 캐싱 (10분)
 )
+
 
 # 라우터 등록
 app.include_router(auth.router, prefix="/api")
