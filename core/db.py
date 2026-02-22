@@ -26,8 +26,5 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
-    except OperationalError:
-        db.rollback()
-        yield db  # 한 번 재시도
     finally:
         db.close()
