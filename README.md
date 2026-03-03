@@ -94,6 +94,9 @@ AI 챗봇을 통해 오행에 맞춰 구체적인 메뉴를 추천받을 수 있
 
 <br />
 
+## ERD
+<img width="1151" height="1993" alt="Untitled" src="https://github.com/user-attachments/assets/12d0906c-cab0-470f-9f5d-efa2015a30c2" />
+
 ## 팀원 소개
 |이름|역할|
 |:---|:---|
