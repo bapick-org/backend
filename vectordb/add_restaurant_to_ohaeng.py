@@ -20,7 +20,7 @@ from vectordb.vectordb_util import (
 
 # LLM API 설정
 client = None
-model_name = "gemma-3-4b-it"
+model_name = "gemini-2.5-flash"
 
 # 지연 로드(Lazy Load) 방식으로 LLM 연결
 def get_llm_client() -> genai.Client:
