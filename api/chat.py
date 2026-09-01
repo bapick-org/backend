@@ -420,7 +420,11 @@ async def handle_websocket_message(
             else message_content
         )
 
-        conversation_history = build_conversation_history(db, room_id)
+        conversation_history = build_conversation_history(
+            db,
+            room_id,
+            exclude_message_id=chat_message.id,
+        )
 
         logger.info(
             f"LLM request | room_id={room_id} | uid={uid} | "
@@ -1066,7 +1070,11 @@ async def send_message(
             user_message_for_llm = request.message.replace(MENTION_TAG, "").strip()
 
         # 3) 기존 대화 내역 + 오행 정보
-        conversation_history = build_conversation_history(db, chatroom.id)
+        conversation_history = build_conversation_history(
+            db,
+            chatroom.id,
+            exclude_message_id=chat_message.id,
+        )
 
         logger.info(
             f"LLM request (HTTP) | room_id={room_id} | uid={uid} | "

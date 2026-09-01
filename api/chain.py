@@ -1,6 +1,6 @@
 import re
 import random 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 import google.genai as genai
 from google.genai import types
@@ -262,10 +262,17 @@ async def get_initial_chat_message(uid: str, db: Session) -> str:
 
 
 # 최근 대화 10개를 문자열로 변환
-def build_conversation_history(db: Session, chatroom_id: int) -> str:
+def build_conversation_history(
+    db: Session,
+    chatroom_id: int,
+    exclude_message_id: Optional[int] = None,
+) -> str:
+    query = db.query(ChatMessage).filter(ChatMessage.room_id == chatroom_id)
+    if exclude_message_id is not None:
+        query = query.filter(ChatMessage.id != exclude_message_id)
+
     recent_messages = (
-        db.query(ChatMessage)
-        .filter(ChatMessage.room_id == chatroom_id)
+        query
         .order_by(ChatMessage.timestamp.desc())
         .limit(MAX_MESSAGES)
         .all()
@@ -275,11 +282,11 @@ def build_conversation_history(db: Session, chatroom_id: int) -> str:
     conversation_history = ""
     
     for msg in recent_messages:
-        if msg.message_type in ["oheng_info", "location_select"]:
+        if msg.message_type in ["oheng_info", "hidden_initial", "location_select"]:
             continue
         
         role = "사용자" if msg.role == "user" else "봇"
-        conversation_history += f"{msg.content}\n"
+        conversation_history += f"{role}: {msg.content}\n"
     return conversation_history
 
 
@@ -524,6 +531,7 @@ def generate_llm_response(
     5) 판단이 불확실하면 SELECT로 판단하지 않는다.
     6) 음식 추천과 상관없는 대화라면 자연스럽게 음식 이야기로 유도한다.
     7) '@밥풀' 멘션을 언급하지 않고 자연스럽게 답변한다.
+    8) 대화 기록에 실제 음식 추천이 없다면 "위에서 추천한", "아까 추천한"이라고 말하지 않는다.
     
     
     """
