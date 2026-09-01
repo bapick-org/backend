@@ -42,6 +42,74 @@ OHAENG_FOOD_LISTS = {
     ],
 }
 
+RECOMMENDATION_KEYWORDS = (
+    "추천", "골라", "뭐 먹", "뭘 먹", "먹을거", "먹을 거",
+    "다른 거", "다른 메뉴", "메뉴 알려",
+)
+
+NON_MENU_UTTERANCES = {
+    "응", "어", "그래", "좋아", "네", "예", "ㅇㅇ", "오케이",
+    "응 추천해줘", "추천해줘", "골라줘", "해줘",
+}
+
+AGREEMENT_UTTERANCES = {
+    "응", "어", "그래", "좋아", "네", "예", "ㅇㅇ", "오케이", "해줘",
+}
+
+
+def is_recommendation_request(
+    user_message: str,
+    conversation_history: str = "",
+) -> bool:
+    """추천 요청 문장을 특정 메뉴 선택으로 오인하지 않도록 선판별한다."""
+    normalized = re.sub(r"\s+", "", user_message).lower()
+    has_recommendation_keyword = any(
+        re.sub(r"\s+", "", keyword).lower() in normalized
+        for keyword in RECOMMENDATION_KEYWORDS
+    )
+    if has_recommendation_keyword:
+        return True
+
+    normalized_history = re.sub(r"\s+", "", conversation_history).lower()
+    accepted_recommendation_offer = (
+        normalized in AGREEMENT_UTTERANCES
+        and any(
+            offer in normalized_history
+            for offer in ("추천해줄까", "추천해볼까", "추천받을래")
+        )
+    )
+    return accepted_recommendation_offer
+
+
+def is_valid_menu_selection(user_message: str, menu_name: str) -> bool:
+    """LLM이 만든 MENU_SELECTED 태그가 실제 메뉴 선택인지 검증한다."""
+    normalized_message = re.sub(r"\s+", "", user_message).lower()
+    normalized_menu = re.sub(r"\s+", " ", menu_name).strip().lower()
+
+    if is_recommendation_request(user_message):
+        return False
+    if not normalized_menu or len(normalized_menu) > 30:
+        return False
+    if normalized_menu in NON_MENU_UTTERANCES:
+        return False
+    if normalized_message in {re.sub(r"\s+", "", value) for value in NON_MENU_UTTERANCES}:
+        return False
+    if is_recommendation_request(normalized_menu):
+        return False
+    return True
+
+
+def _build_recommendation_fallback(oheng_info_text: str) -> str:
+    """추천 요청에 모델이 잘못된 선택 태그를 반환했을 때 안전한 답변을 만든다."""
+    lacking_match = re.search(r"부족한 오행:\s*([^\n]+)", oheng_info_text)
+    lacking_text = lacking_match.group(1) if lacking_match else ""
+    target_oheng = next(
+        (name for name in OHAENG_FOOD_LISTS if name in lacking_text),
+        "토(土)",
+    )
+    menus = random.sample(OHAENG_FOOD_LISTS[target_oheng], 3)
+    return f"좋아! 오늘은 {', '.join(menus)} 어때? 마음에 드는 메뉴 하나를 골라줘."
+
 # 사용자의 오행 상태를 기반으로 메뉴 추천 설명 메시지 생성
 async def generate_oheng_explanation(uid: str, db: Session) -> str:
     # 오행 정보 가져오기
@@ -404,14 +472,7 @@ def is_initial_recommendation_request(user_message: str, conversation_history: s
         return False
     
     # 추천 관련 키워드
-    recommendation_keywords = [
-        "골라", "추천", "뭐 먹", "뭘 먹", "먹을거", "먹을 거",
-        #"점심", "저녁", "아침", "식사", "맛집", "메뉴", "음식",
-    ]
-    
-    # 사용자의 메시지에 추천 관련 키워드가 있는지 확인
-    user_message_lower = user_message.lower()
-    return any(keyword in user_message_lower for keyword in recommendation_keywords)
+    return is_recommendation_request(user_message, conversation_history)
 
 # llm 호출 및 응답 반환
 def generate_llm_response(
@@ -419,6 +480,17 @@ def generate_llm_response(
     user_message: str, 
     oheng_info_text: str = ""
     ) -> str:
+    recommendation_requested = is_recommendation_request(
+        user_message,
+        conversation_history,
+    )
+    recommendation_intent_rule = (
+        "이번 사용자 메시지는 RECOMMEND로 확정되었다. 절대로 MENU_SELECTED 태그를 출력하지 말고, "
+        "서로 다른 음식 3개를 추천한다."
+        if recommendation_requested
+        else "사용자 메시지를 아래 의도 규칙에 따라 판별한다."
+    )
+
     prompt = f"""
     너는 오늘의 운세와 오행 기운에 맞춰 음식을 추천해주는 챗봇 '밥풀이'야. 
     너의 목표는 사용자의 운세에 부족한 오행 기운을 채워줄 수 있는 음식을 추천하는 거야. 
@@ -436,13 +508,22 @@ def generate_llm_response(
     --- 사용자 메시지 ---
     {user_message}
 
+    의도 규칙:
+    - RECOMMEND: 음식 추천을 요청함. "추천", "골라줘", "뭐 먹지"가 포함되면 반드시 RECOMMEND다.
+    - SELECT: "김치찌개", "초밥 먹을래"처럼 특정 음식 하나를 명확히 선택함.
+    - CHAT: 그 밖의 일반 대화나 "응", "그래", "좋아" 같은 짧은 동의 표현.
+
+    현재 메시지 판별 지침: {recommendation_intent_rule}
+
     규칙:
-    1) 사용자가 단일 음식 이름을 말하면 무조건 intent = "SELECT" 로 판단해야 한다.
-    2) intent가 SELECT라면 반드시 아래 형식으로 출력한다:
+    1) RECOMMEND라면 오행 정보를 반영해 음식 3개를 추천하고 MENU_SELECTED 태그를 출력하지 않는다.
+    2) SELECT일 때만 반드시 아래 형식 하나로 출력한다:
     [MENU_SELECTED:사용자말한음식명]
-    3) 음식 추천과 상관없는 대화라면 자연스럽게 음식이야기로 유도한다.
-    4) '@밥풀' 멘션을 언급하지 않고 자연스럽게 답변한다.
-    5) 음식을 추천할 때는 3개씩 추천한다.
+    3) "응 추천해줘", "다른 것도 추천해줘", "뭐 먹을까?"는 RECOMMEND이며 절대 SELECT가 아니다.
+    4) "응", "그래", "좋아" 자체는 음식명이 아니므로 절대 SELECT가 아니다.
+    5) 판단이 불확실하면 SELECT로 판단하지 않는다.
+    6) 음식 추천과 상관없는 대화라면 자연스럽게 음식 이야기로 유도한다.
+    7) '@밥풀' 멘션을 언급하지 않고 자연스럽게 답변한다.
     
     
     """
@@ -454,5 +535,11 @@ def generate_llm_response(
     )
 
     llm_response_text = response.text.strip()
+
+    menu_match = re.search(r"\[MENU_SELECTED:(.+?)\]", llm_response_text)
+    if menu_match and not is_valid_menu_selection(user_message, menu_match.group(1)):
+        if recommendation_requested:
+            return _build_recommendation_fallback(oheng_info_text)
+        return "어떤 메뉴가 당기는지 말해줘. 고민되면 내가 세 가지 추천해줄게!"
         
     return llm_response_text
