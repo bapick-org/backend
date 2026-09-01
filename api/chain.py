@@ -12,7 +12,7 @@ from saju.saju_service import get_today_saju_analysis
 from vectordb.vectordb_util import get_embeddings, get_chroma_client, COLLECTION_NAME_RESTAURANTS
 
 client = genai.Client(api_key=GEMMA_API_KEY)
-model_name = "gemma-3-4b-it"
+model_name = "gemini-3.5-flash-lite"
 
 embeddings = get_embeddings()
 chroma_client = get_chroma_client()
