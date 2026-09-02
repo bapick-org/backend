@@ -26,6 +26,7 @@ from api.chain import (
     get_initial_chat_message,
     search_and_recommend_restaurants,
     generate_oheng_explanation,
+    is_valid_menu_selection,
 )
 from saju.saju_service import get_today_saju_analysis
 
@@ -50,7 +51,12 @@ def get_latest_selected_menu(db: Session, room_id: int) -> Optional[str]:
     return None
 
 
-def process_menu_selection(db: Session, chatroom: ChatRoom, llm_output: str) -> Optional[dict]:
+def process_menu_selection(
+    db: Session,
+    chatroom: ChatRoom,
+    llm_output: str,
+    user_message: str,
+) -> Optional[dict]:
     """
     LLM 응답에서 [MENU_SELECTED:xxx] 태그를 찾아서,
     - chatroom.selected_menu에 저장
@@ -61,6 +67,15 @@ def process_menu_selection(db: Session, chatroom: ChatRoom, llm_output: str) -> 
         return None
 
     selected_menu = menu_name_match.group(1).strip()
+
+    if not is_valid_menu_selection(user_message, selected_menu):
+        logger.warning(
+            "Rejected invalid menu selection | room_id=%s | user_message=%s | menu=%s",
+            chatroom.id,
+            user_message[:50],
+            selected_menu,
+        )
+        return None
 
     # ChatRoom에 선택 메뉴 저장
     chatroom.selected_menu = selected_menu
@@ -405,7 +420,11 @@ async def handle_websocket_message(
             else message_content
         )
 
-        conversation_history = build_conversation_history(db, room_id)
+        conversation_history = build_conversation_history(
+            db,
+            room_id,
+            exclude_message_id=chat_message.id,
+        )
 
         logger.info(
             f"LLM request | room_id={room_id} | uid={uid} | "
@@ -459,7 +478,12 @@ async def handle_websocket_message(
             return
 
         # 4) LLM 응답에 MENU_SELECTED 태그가 있는 경우 → 위치 선택 단계로
-        location_select_reply = process_menu_selection(db, chatroom, llm_output)
+        location_select_reply = process_menu_selection(
+            db,
+            chatroom,
+            llm_output,
+            user_message_for_llm,
+        )
         if location_select_reply:
             assistant_message = (
                 db.query(ChatMessage)
@@ -1046,7 +1070,11 @@ async def send_message(
             user_message_for_llm = request.message.replace(MENTION_TAG, "").strip()
 
         # 3) 기존 대화 내역 + 오행 정보
-        conversation_history = build_conversation_history(db, chatroom.id)
+        conversation_history = build_conversation_history(
+            db,
+            chatroom.id,
+            exclude_message_id=chat_message.id,
+        )
 
         logger.info(
             f"LLM request (HTTP) | room_id={room_id} | uid={uid} | "
@@ -1072,7 +1100,12 @@ async def send_message(
         )
 
         # 4) MENU_SELECTED 처리: 위치 선택 메시지
-        location_select_reply = process_menu_selection(db, chatroom, llm_output)
+        location_select_reply = process_menu_selection(
+            db,
+            chatroom,
+            llm_output,
+            user_message_for_llm,
+        )
         if location_select_reply:
             return {
                 "reply": location_select_reply,
