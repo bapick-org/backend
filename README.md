@@ -71,7 +71,7 @@ AI 챗봇을 통해 오행에 맞춰 구체적인 메뉴를 추천받을 수 있
 ![NGINX](https://img.shields.io/badge/NGINX-009639?style=flat-square&logo=nginx&logoColor=white)
 
 ### AI/ML
-![Gemma](https://img.shields.io/badge/Gemma-4285F4?style=flat-square&logo=google&logoColor=white)
+![gemini](https://img.shields.io/badge/gemini-4285F4?style=flat-square&logo=google&logoColor=white)
 ![HuggingFace](https://img.shields.io/badge/🤗_HuggingFace-FFD21E?style=flat-square&logoColor=black)
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-FF6F00?style=flat-square)
 
