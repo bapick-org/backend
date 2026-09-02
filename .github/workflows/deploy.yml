@@ -64,6 +64,17 @@ jobs:
           script: |
             set -e
             cd ~
+
+            echo "=== Disk usage before deployment ==="
+            df -h /
+
+            echo "=== Pull and deploy ==="
             sudo docker-compose pull
             sudo docker-compose up -d --force-recreate
+            sudo docker-compose ps
+
+            echo "=== Clean up unused images ==="
             sudo docker image prune -f
+
+            echo "=== Disk usage after deployment ==="
+            df -h /
