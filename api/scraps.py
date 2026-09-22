@@ -23,7 +23,7 @@ def get_my_collections(
     if not user:
         logger.warning(f"Collections fetch rejected | actor_uid={uid} | reason=user_not_found")
         raise UnauthorizedException("유효하지 않은 사용자 정보입니다.")
-    
+
     response_list = []
 
     # "모든 스크랩" 가상 컬렉션 생성: 해당 유저의 스크랩 중 가장 최근 스크랩의 식당 이미지 가져오기
@@ -34,20 +34,20 @@ def get_my_collections(
         .first()
 
     mock_all_collection = Collection(
-        id=0, 
-        name="모든 스크랩", 
+        id=0,
+        name="모든 스크랩",
         created_at=datetime.utcnow()
     )
 
     all_card = CollectionResponse.from_orm_custom(mock_all_collection, total_latest_scrap)
     all_card.is_system_default = True # 시스템 기본 카드로 표시
     response_list.append(all_card)
-    
+
     collections = db.query(Collection)\
         .filter(Collection.user_id == user.id)\
         .order_by(Collection.created_at.desc())\
         .all()
-        
+
     for collection in collections:
         # 가장 최근 스크랩 1개만 가져옴
         latest_scrap = db.query(Scrap)\
@@ -59,7 +59,7 @@ def get_my_collections(
         response_list.append(
             CollectionResponse.from_orm_custom(collection, latest_scrap)
         )
-        
+
     return response_list
 
 
@@ -91,7 +91,7 @@ def create_user_collection(
         name=collection_data.name,
         created_at=datetime.utcnow()
     )
-    
+
     db.add(new_collection)
     db.commit()
     db.refresh(new_collection)
@@ -142,7 +142,7 @@ def delete_user_collection(
         f"Collection deleted | actor_id={user.id} | "
         f"collection_id={collection.id} | name={collection.name}"
     )
-    
+
     return
 
 
@@ -225,7 +225,7 @@ def create_scrap(
     scrap_data: ScrapCreateRequest,
     db: Session = Depends(get_db),
     uid: str = Depends(verify_firebase_token)
-):    
+):
     user = db.query(User).filter(User.firebase_uid == uid).first()
     if not user:
         logger.warning(f"Scrap create rejected | actor_uid={uid} | reason=user_not_found")
@@ -249,7 +249,7 @@ def create_scrap(
         collection_id=scrap_data.collection_id,
         created_at=datetime.utcnow()
     )
-    
+
     db.add(new_scrap)
     db.commit()
     db.refresh(new_scrap)
@@ -313,10 +313,10 @@ def delete_scrap(
 
     db.delete(scrap)
     db.commit()
-    
+
     logger.info(
         f"Scrap deleted | actor_id={user.id} | "
-        f"restaurant_id={restaurant_id} | scrap_id={scrap.id}"
+        f"restaurant_id={restaurant_id}"
     )
-    
+
     return
