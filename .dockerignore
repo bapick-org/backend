@@ -28,3 +28,5 @@ data-collecting/
 
 models/kure-v1-onnx/
 *.onnx
+
+README.md
